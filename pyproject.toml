@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cpp-deepwiki"
+version = "0.1.0"
+description = "Compiler-assisted RAG and LLM documentation service for C/C++ repositories"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "fastapi==0.115.6",
+  "uvicorn[standard]==0.34.0",
+  "httpx==0.28.1",
+  "pydantic==2.10.4",
+  "pydantic-settings==2.7.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest==8.3.4", "pytest-asyncio==0.25.0"]
+faiss = ["faiss-cpu==1.9.0.post1", "numpy==2.0.2"]
+
+[project.scripts]
+cppwiki = "cppwiki.main:main"
+
+[tool.setuptools]
+package-dir = {"" = "backend"}
+
+[tool.setuptools.packages.find]
+where = ["backend"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

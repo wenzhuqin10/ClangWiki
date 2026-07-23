@@ -1,0 +1,32 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "enabled_providers": ["zai"],
+  "provider": {
+    "zai": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Z.AI Coding Plan",
+      "options": {
+        "baseURL": "https://api.z.ai/api/coding/paas/v4",
+        "timeout": 900000,
+        "chunkTimeout": 60000
+      },
+      "models": {
+        "glm-5.1": {
+          "name": "GLM-5.1",
+          "limit": {
+            "context": 200000,
+            "output": 32768
+          }
+        }
+      }
+    }
+  },
+  "model": "zai/glm-5.1",
+  "permission": {
+    "read": "deny",
+    "glob": "deny",
+    "grep": "deny",
+    "bash": "deny",
+    "edit": "deny"
+  }
+}
