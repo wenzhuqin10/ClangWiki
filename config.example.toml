@@ -1,0 +1,15 @@
+# All values can be overridden with the corresponding CLI options.
+[opencode]
+# `opencode` is standard. Set `nga` here on managed installations where nga is
+# a compatible OpenCode launcher.
+executable = "opencode"
+model = "provider/glm-5.1"
+# Optional. The agent must already be installed globally on the target device.
+agent = "clangwiki-doc"
+timeout_seconds = 900
+
+[generation]
+language = "简体中文"
+max_source_chars_per_task = 36000
+overwrite = false
+

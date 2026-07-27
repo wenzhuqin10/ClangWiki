@@ -1,0 +1,14 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "provider/glm-5.1",
+  "permission": {
+    "read": "allow",
+    "glob": "allow",
+    "grep": "allow",
+    "bash": "deny",
+    "edit": "deny",
+    "webfetch": "deny",
+    "websearch": "deny"
+  }
+}
+

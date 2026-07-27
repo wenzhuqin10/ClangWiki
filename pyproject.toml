@@ -1,35 +1,24 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cpp-deepwiki"
+name = "clangwiki"
 version = "0.1.0"
-description = "Compiler-assisted RAG and LLM documentation service for C/C++ repositories"
+description = "Compiler-assisted C/C++ repository documentation through OpenCode CLI"
 readme = "README.md"
-requires-python = ">=3.9"
-dependencies = [
-  "fastapi==0.115.6",
-  "uvicorn[standard]==0.34.0",
-  "httpx==0.28.1",
-  "pydantic==2.10.4",
-  "pydantic-settings==2.7.0",
-]
+requires-python = ">=3.10"
+dependencies = []
 
 [project.optional-dependencies]
-test = ["pytest==8.3.4", "pytest-asyncio==0.25.0"]
-faiss = ["faiss-cpu==1.9.0.post1", "numpy==2.0.2"]
+test = ["pytest>=8.0"]
 
 [project.scripts]
-cppwiki = "cppwiki.main:main"
-
-[tool.setuptools]
-package-dir = {"" = "backend"}
+clangwiki = "clangwiki.cli:main"
 
 [tool.setuptools.packages.find]
-where = ["backend"]
+include = ["clangwiki*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "function"
+
