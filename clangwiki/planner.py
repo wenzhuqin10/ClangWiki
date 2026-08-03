@@ -5,6 +5,7 @@ from .models import DocumentTask, Module
 
 def plan_documents(modules: dict[str, Module], only: tuple[str, ...] = ()) -> list[DocumentTask]:
     requested = set(only)
+
     def include(kind: str) -> bool:
         return not requested or kind in requested
 
@@ -17,8 +18,15 @@ def plan_documents(modules: dict[str, Module], only: tuple[str, ...] = ()) -> li
     if include("module"):
         for module in modules.values():
             filename = f"Modules/{module.module_id}.md"
-            tasks.append(DocumentTask(f"module-{module.module_id}", "module",
-                f"{module.display_name} 模块", filename, (module.module_id,)))
+            tasks.append(
+                DocumentTask(
+                    f"module-{module.module_id}",
+                    "module",
+                    f"{module.display_name} 模块",
+                    filename,
+                    (module.module_id,),
+                )
+            )
     if include("data-structures"):
         tasks.append(DocumentTask("data-structures", "data-structures", "数据结构", "DataStructures.md", all_modules))
     if include("call-flows"):
@@ -26,4 +34,3 @@ def plan_documents(modules: dict[str, Module], only: tuple[str, ...] = ()) -> li
     if include("api-reference"):
         tasks.append(DocumentTask("api-reference", "api-reference", "API 参考", "APIReference.md", all_modules))
     return tasks
-

@@ -23,7 +23,11 @@ class OpenCodeRunner:
         command = [executable, "run", "--model", self.model, "--file", str(context_file)]
         if self.agent:
             command.extend(["--agent", self.agent])
-        command.append("依据附件的 ClangWiki 任务上下文生成文档。仅输出最终 Markdown 正文。")
+        command.append(
+            "依据附件中的 ClangWiki 任务上下文生成文档。严格遵守其中的章节契约和证据分级，"
+            "不得改名、遗漏、合并或增加二级章节；证据不足时保留章节并明确说明。"
+            "仅输出最终 Markdown 正文。"
+        )
         return command
 
     def generate(self, repository: Path, context_file: Path, stdout_log: Path, stderr_log: Path) -> str:
@@ -48,4 +52,3 @@ class OpenCodeRunner:
         if not output:
             raise OpenCodeError(f"opencode run 返回空输出。详见：{stderr_log}")
         return output
-

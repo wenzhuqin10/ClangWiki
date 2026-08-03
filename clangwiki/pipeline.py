@@ -44,7 +44,7 @@ class GenerationPipeline:
             stderr_log = workspace / "logs" / "opencode" / f"{task.task_id}.stderr.txt"
             try:
                 markdown = runner.generate(repo, context_file, stdout_log, stderr_log)
-                validate_markdown(markdown)
+                validate_markdown(markdown, task.document_type)
                 destination = write_document(cfg.output, task.output_relative_path, markdown, cfg.overwrite)
             except ClangWikiError:
                 self._log(log, f"[FAILED] {task.task_id}; logs: {stdout_log}, {stderr_log}")
@@ -77,4 +77,3 @@ class GenerationPipeline:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8", newline="\n") as stream:
             stream.write(line + "\n")
-

@@ -2,18 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .document_schema import render_schema_instructions
 from .io import write_text
 from .models import AnalysisBundle, DocumentTask, Module
-
-
-TEMPLATE_RULES = {
-    "readme": "说明项目用途、构建入口、模块导航和阅读建议。",
-    "architecture": "说明模块边界、包含依赖和确定的跨模块调用；候选调用必须标注为候选。",
-    "module": "说明模块职责、文件分工、公共接口、关键数据结构和生命周期。",
-    "data-structures": "聚焦 struct、class、enum、typedef 和它们的代码位置。",
-    "call-flows": "按入口函数描述确定 CALLS 链；POSSIBLE_CALL 只能作为未确认的候选。",
-    "api-reference": "列出可见函数、参数、返回类型和所在文件，不补造接口。",
-}
 
 
 def build_context(task: DocumentTask, repo: Path, modules: dict[str, Module], analysis: AnalysisBundle,
@@ -30,12 +21,16 @@ def build_context(task: DocumentTask, repo: Path, modules: dict[str, Module], an
         "", "## 任务元数据", f"- 任务 ID：{task.task_id}", f"- 文档类型：{task.document_type}",
         f"- 文档标题：{task.title}", f"- 输出路径：{task.output_relative_path}",
         f"- 输出语言：{language}", f"- 仓库：{repo}",
-        "", "## 生成要求", TEMPLATE_RULES[task.document_type],
+        "", "## 文档章节契约", render_schema_instructions(task.document_type),
         "", "## 证据使用规则",
-        "1. `certainty=compiler` 的符号和关系是编译器确定的事实。",
-        "2. `certainty=lexical` 或 `POSSIBLE_CALL` 是辅助信息，不能叙述为确定的运行时事实。",
-        "3. 仅依据本文件的事实和源代码片段写作；无法确认时请明确说明。",
-        "4. 保持文件名、宏名、类型名、函数名和参数名原样；只输出 Markdown 正文。",
+        "1. 编译器证据：`certainty=compiler` 的符号和关系可表述为 Clang 分析确认的事实。",
+        "2. 源码证据：源代码中直接可见的赋值、分支、日志和资源操作可表述为源码确认的事实。",
+        "3. 合理推断：根据命名、目录或多条关系作出的解释必须明确使用“推测”“可能”或“根据现有证据推断”。",
+        "4. 无法确认：缺少运行数据、设计文档、提交历史或完整调用关系时，必须明确写出“当前证据无法确定”。",
+        "5. `certainty=lexical` 或 `POSSIBLE_CALL` 只能放在候选或待确认内容中，不能叙述为确定的运行时调用。",
+        "6. 协议或通用领域知识只能辅助解释，不能冒充当前仓库的真实实现。",
+        "7. 保持文件名、宏名、类型名、函数名和参数名原样，并尽量附带 `路径:行号`。",
+        "8. 只输出最终 Markdown 正文，不输出生成过程、代码围栏外壳或致歉说明。",
         "", "## 模块与文件",
     ]
     for module_id in task.module_ids:
@@ -61,7 +56,10 @@ def build_context(task: DocumentTask, repo: Path, modules: dict[str, Module], an
             continue
         block = f"\n### `{relative}`\n```{_language_hint(source.suffix)}\n{content}\n```\n"
         if used + len(block) > max_source_chars:
-            blocks.append(f"\n> 为控制上下文长度，未加入其余源文件内容；可依据上述符号与关系事实说明边界。")
+            blocks.append(
+                "\n> 为控制上下文长度，未加入其余源文件内容。文档必须在限制章节中说明上下文已截断，"
+                "只能依据上述符号与关系事实描述未附源码的部分。"
+            )
             break
         blocks.append(block)
         used += len(block)
@@ -71,4 +69,3 @@ def build_context(task: DocumentTask, repo: Path, modules: dict[str, Module], an
 
 def _language_hint(suffix: str) -> str:
     return "c" if suffix.lower() in {".c", ".h"} else "cpp"
-

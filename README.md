@@ -60,6 +60,7 @@ workspace/
 - [架构说明](docs/ARCHITECTURE.zh-CN.md)
 - [部署与使用说明](docs/DEPLOYMENT_AND_USAGE.zh-CN.md)
 - [数据格式与准确性边界](docs/DATA_CONTRACT.zh-CN.md)
+- [文档输出规范](docs/DOCUMENT_OUTPUT_SPEC.zh-CN.md)
 - [Build Agent 实现参考](ClangWiki_Build_Agent_Reference.md)
 
 ## 安全边界
@@ -68,4 +69,3 @@ workspace/
 - 文档 Agent 只读：允许 `read`、`glob`、`grep`；拒绝 `bash`、`edit`、网络工具。
 - 目标仓库不会写入中间文件，所有产物均写入显式 workspace。
 - Clang 确定的事实与 LLM 的语义说明分开保存，未解析调用不会写成确定调用。
-
