@@ -36,14 +36,16 @@ Compiler Analysis                        [Clang/LibTooling + ClangWiki]
         ▼
 Knowledge and Planning                   [ClangWiki]
 ├── JSON artifacts and source coverage
-├── directory-based module map
-├── fixed document plan
+├── hierarchical module tree
+├── channel-level leaf boundaries
+├── bottom-up document plan
 └── one task = one output Markdown file
         │
         ▼
 Bounded Context Builder                  [ClangWiki]
-├── selects task module facts and relations
-├── attaches bounded source snippets
+├── leaf: selects direct Clang facts and source snippets
+├── parent: reads generated direct-child documents
+├── repository: reads top-level summaries
 └── writes task-specific context Markdown
         │
         ▼
@@ -57,7 +59,25 @@ Markdown validator and writer            [ClangWiki]
 └── workspace/output/*.md
 ```
 
-## 3. 分析模式
+## 3. 分层文档生成
+
+通信基带代码仓按“源码层级树 + 信道叶子边界”组织文档。PDSCH、PUSCH、PDCCH 等信道级子模块是最小文档单元，其内部更深的 `encoder`、`mapper` 等目录不会再拆成独立文档。
+
+```text
+信道级叶子文档（直接读取 Clang 事实和源码）
+        ↓
+父模块汇总（读取直接子文档和本层直接源码）
+        ↓
+子系统汇总（继续读取直接子文档）
+        ↓
+Architecture.md
+        ↓
+README.md
+```
+
+生产环境应使用重复的 `--leaf-module-path` 明确指定仓库相对路径。自动识别仅作为未配置时的辅助策略，不能替代仓库维护者对模块边界的确认。
+
+## 4. 分析模式
 
 | 模式 | 含义 | 文档中的使用方式 |
 |---|---|---|
@@ -66,7 +86,7 @@ Markdown validator and writer            [ClangWiki]
 
 第一版故意不把词法结果伪装为编译器事实。宏展开、函数指针、回调、动态加载、条件编译的实际路径和跨线程数据流均不在确定性分析范围内。
 
-## 4. `opencode run` 集成边界
+## 5. `opencode run` 集成边界
 
 ClangWiki 使用子进程调用：
 
@@ -78,4 +98,3 @@ ClangWiki 使用子进程调用：
 - ClangWiki 只收集标准输出、写入 Markdown，并保存 stdout/stderr 日志。
 - API Key 不会传入命令行、配置文件、日志或 workspace。
 - 标准 OpenCode 可执行文件名是 `opencode`；企业环境可用 `--opencode-executable nga` 指向参数兼容的启动器。
-

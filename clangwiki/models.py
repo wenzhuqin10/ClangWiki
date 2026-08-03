@@ -21,6 +21,7 @@ class RunConfig:
     skip_cmake: bool = False
     skip_analysis: bool = False
     only: tuple[str, ...] = ()
+    leaf_module_paths: tuple[str, ...] = ()
 
 
 @dataclass
@@ -42,6 +43,8 @@ class DocumentTask:
     title: str
     output_relative_path: str
     module_ids: tuple[str, ...]
+    hierarchy_role: str = "repository"
+    child_document_paths: tuple[str, ...] = ()
 
 
 @dataclass
@@ -50,4 +53,9 @@ class Module:
     display_name: str
     files: list[str]
     symbols: list[dict[str, Any]]
-
+    source_path: str = ""
+    parent_id: str | None = None
+    child_ids: tuple[str, ...] = ()
+    depth: int = 0
+    is_leaf: bool = True
+    is_channel_leaf: bool = False

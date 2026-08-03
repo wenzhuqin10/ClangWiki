@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "clangwiki"
-version = "0.1.0"
+version = "0.2.0"
 description = "Compiler-assisted C/C++ repository documentation through OpenCode CLI"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -21,4 +21,3 @@ include = ["clangwiki*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-

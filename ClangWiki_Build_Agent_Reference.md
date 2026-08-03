@@ -513,16 +513,19 @@ Document Planner 决定：
 - 每篇文档使用哪个 Prompt；
 - 每篇文档输出到哪里。
 
-第一版推荐输出：
+通信基带仓采用与源码层级同构的输出：
 
 ```text
 output/
 ├── README.md
 ├── Architecture.md
 ├── Modules/
-│   ├── Module_A.md
-│   ├── Module_B.md
-│   └── Module_C.md
+│   └── src/
+│       ├── index.md                 # src 父级汇总
+│       └── phy/
+│           ├── index.md             # PHY 子系统汇总
+│           ├── pdsch/index.md       # PDSCH 信道级叶子
+│           └── pusch/index.md       # PUSCH 信道级叶子
 ├── DataStructures.md
 ├── CallFlows.md
 └── APIReference.md
@@ -533,20 +536,25 @@ output/
 ```json
 [
   {
-    "task_id": "architecture",
-    "document_type": "architecture",
-    "title": "系统架构",
-    "prompt_template": "prompts/architecture.md",
-    "output": "Architecture.md",
-    "module_ids": ["network", "storage", "scheduler"]
+    "task_id": "leaf-module-src--phy--pdsch",
+    "document_type": "leaf-module",
+    "title": "pdsch 信道级子模块",
+    "output_relative_path": "Modules/src/phy/pdsch/index.md",
+    "module_ids": ["src--phy--pdsch"],
+    "hierarchy_role": "leaf",
+    "child_document_paths": []
   },
   {
-    "task_id": "module_network",
-    "document_type": "module",
-    "title": "Network 模块",
-    "prompt_template": "prompts/module.md",
-    "output": "Modules/Network.md",
-    "module_ids": ["network"]
+    "task_id": "module-summary-src--phy",
+    "document_type": "module-summary",
+    "title": "phy 模块汇总",
+    "output_relative_path": "Modules/src/phy/index.md",
+    "module_ids": ["src--phy"],
+    "hierarchy_role": "aggregate",
+    "child_document_paths": [
+      "Modules/src/phy/pdsch/index.md",
+      "Modules/src/phy/pusch/index.md"
+    ]
   }
 ]
 ```
@@ -556,6 +564,8 @@ output/
 ```text
 一篇文档 = 一个任务 = 一次 opencode run
 ```
+
+任务顺序必须是叶子优先、父级随后，最后才生成 `Architecture.md` 和 `README.md`。父级任务将直接子文档作为输入，实现逐层向上总结。
 
 ---
 
@@ -581,15 +591,15 @@ Context Builder 根据文档任务选择：
 
 ## Task Metadata
 
-- Task ID: module_network
-- Document Type: module
-- Output: Modules/Network.md
+- Task ID: leaf-module-src--phy--pdsch
+- Document Type: leaf-module
+- Output: Modules/src/phy/pdsch/index.md
 - Repository: D:\repo\demo
 
 ## Target Module
 
-- Module ID: network
-- Module Name: Network
+- Module ID: src--phy--pdsch
+- Module Name: PDSCH
 
 ## Files
 
@@ -938,7 +948,7 @@ output:
 [KNOWLEDGE] 已构建 7 个模块
 [PLAN] 已生成 11 个文档任务
 [CONTEXT] 已生成 module_network_context.md
-[OPENCODE] 正在生成 Modules/Network.md
+[OPENCODE] 正在生成 Modules/src/phy/pdsch/index.md
 [OUTPUT] 文档校验通过
 ```
 
@@ -1044,7 +1054,7 @@ CMake
 
 ```text
 Architecture.md
-Modules/*.md
+Modules/<source-path>/index.md
 DataStructures.md
 APIReference.md
 ```

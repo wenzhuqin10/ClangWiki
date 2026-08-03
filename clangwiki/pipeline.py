@@ -30,7 +30,13 @@ class GenerationPipeline:
         self._log(log, f"[BUILD] compilation database: {compilation_database}")
         analysis = self._analysis(repo, compilation_database)
         self._log(log, f"[ANALYZE] mode={analysis.mode}, symbols={len(analysis.symbols)}, relations={len(analysis.relations)}")
-        modules = build_knowledge(repo, compilation_database, analysis, workspace / "knowledge")
+        modules = build_knowledge(
+            repo,
+            compilation_database,
+            analysis,
+            workspace / "knowledge",
+            cfg.leaf_module_paths,
+        )
         tasks = plan_documents(modules, cfg.only)
         write_json(workspace / "tasks" / "tasks.json", [task.__dict__ for task in tasks])
         self._log(log, f"[PLAN] {len(tasks)} document tasks")
@@ -38,7 +44,16 @@ class GenerationPipeline:
         generated: list[Path] = []
         for task in tasks:
             context_file = workspace / "tasks" / "contexts" / f"{task.task_id}.md"
-            build_context(task, repo, modules, analysis, context_file, cfg.language, cfg.max_source_chars_per_task)
+            build_context(
+                task,
+                repo,
+                modules,
+                analysis,
+                context_file,
+                cfg.language,
+                cfg.max_source_chars_per_task,
+                cfg.output,
+            )
             self._log(log, f"[CONTEXT] {context_file.name}")
             stdout_log = workspace / "logs" / "opencode" / f"{task.task_id}.stdout.txt"
             stderr_log = workspace / "logs" / "opencode" / f"{task.task_id}.stderr.txt"

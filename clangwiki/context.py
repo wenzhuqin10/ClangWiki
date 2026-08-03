@@ -7,8 +7,16 @@ from .io import write_text
 from .models import AnalysisBundle, DocumentTask, Module
 
 
-def build_context(task: DocumentTask, repo: Path, modules: dict[str, Module], analysis: AnalysisBundle,
-                  output_path: Path, language: str, max_source_chars: int) -> Path:
+def build_context(
+    task: DocumentTask,
+    repo: Path,
+    modules: dict[str, Module],
+    analysis: AnalysisBundle,
+    output_path: Path,
+    language: str,
+    max_source_chars: int,
+    generated_output_root: Path | None = None,
+) -> Path:
     selected_files = sorted({file for module_id in task.module_ids for file in modules[module_id].files})
     selected_symbols = [symbol for module_id in task.module_ids for symbol in modules[module_id].symbols]
     selected_names = {str(symbol.get("qualified_name") or symbol.get("name")) for symbol in selected_symbols}
@@ -20,7 +28,7 @@ def build_context(task: DocumentTask, repo: Path, modules: dict[str, Module], an
         "# ClangWiki Document Task",
         "", "## 任务元数据", f"- 任务 ID：{task.task_id}", f"- 文档类型：{task.document_type}",
         f"- 文档标题：{task.title}", f"- 输出路径：{task.output_relative_path}",
-        f"- 输出语言：{language}", f"- 仓库：{repo}",
+        f"- 输出语言：{language}", f"- 仓库：{repo}", f"- 层级角色：{task.hierarchy_role}",
         "", "## 文档章节契约", render_schema_instructions(task.document_type),
         "", "## 证据使用规则",
         "1. 编译器证据：`certainty=compiler` 的符号和关系可表述为 Clang 分析确认的事实。",
@@ -31,11 +39,51 @@ def build_context(task: DocumentTask, repo: Path, modules: dict[str, Module], an
         "6. 协议或通用领域知识只能辅助解释，不能冒充当前仓库的真实实现。",
         "7. 保持文件名、宏名、类型名、函数名和参数名原样，并尽量附带 `路径:行号`。",
         "8. 只输出最终 Markdown 正文，不输出生成过程、代码围栏外壳或致歉说明。",
-        "", "## 模块与文件",
+        "", "## 模块层级与直接源码",
     ]
     for module_id in task.module_ids:
         module = modules[module_id]
-        blocks.extend([f"### {module.display_name} (`{module.module_id}`)", *[f"- `{file}`" for file in module.files]])
+        parent = modules.get(module.parent_id) if module.parent_id else None
+        blocks.extend(
+            [
+                f"### {module.display_name} (`{module.module_id}`)",
+                f"- 源码路径：`{module.source_path or '.'}`",
+                f"- 层级深度：{module.depth}",
+                f"- 节点类型：{'信道级叶子模块' if module.is_channel_leaf else '最小叶子模块' if module.is_leaf else '父级汇总模块'}",
+                f"- 父模块：`{parent.module_id}`" if parent else "- 父模块：无",
+                "- 子模块：" + (", ".join(f"`{child_id}`" for child_id in module.child_ids) or "无"),
+                "- 本层直接拥有的源码文件：",
+                *([f"  - `{file}`" for file in module.files] or ["  - 无；本节点完全由子模块向上汇聚。"]),
+            ]
+        )
+
+    blocks.extend(["", "## 已生成的直接子文档"])
+    if task.child_document_paths:
+        available_children = {
+            relative_path: generated_output_root / relative_path
+            for relative_path in task.child_document_paths
+            if generated_output_root is not None and (generated_output_root / relative_path).is_file()
+        }
+        per_child_budget = max(1, max_source_chars // max(1, len(available_children)))
+        for relative_path in task.child_document_paths:
+            child_path = available_children.get(relative_path)
+            if child_path is None:
+                blocks.append(f"- `{relative_path}`：尚未生成或本次任务未包含该子文档。")
+                continue
+            content = child_path.read_text(encoding="utf-8", errors="replace")
+            excerpt = content[:per_child_budget]
+            blocks.extend(
+                [
+                    f"### 子文档 `{relative_path}`",
+                    "<child_document>",
+                    excerpt,
+                    "</child_document>",
+                ]
+            )
+            if len(excerpt) < len(content):
+                blocks.append("> 该子文档因上下文预算被截断，汇总时必须在限制章节中说明。")
+    else:
+        blocks.append("- 无。叶子模块应直接依据 Clang 事实和源码生成最小单元文档。")
     blocks.extend(["", "## 符号事实"])
     for symbol in selected_symbols:
         blocks.append(f"- `{symbol.get('kind')}` `{symbol.get('qualified_name')}` — "

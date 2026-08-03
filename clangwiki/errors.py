@@ -18,10 +18,13 @@ class AnalysisError(ClangWikiError):
     pass
 
 
+class ModuleConfigurationError(ClangWikiError):
+    pass
+
+
 class OpenCodeError(ClangWikiError):
     pass
 
 
 class MarkdownValidationError(ClangWikiError):
     pass
-

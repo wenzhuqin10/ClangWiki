@@ -45,10 +45,10 @@ DOCUMENT_SCHEMAS: dict[str, DocumentSchema] = {
             SectionSpec("架构风险与证据限制", ("列出耦合、未解析关系、条件编译和分析限制。",)),
         ),
     ),
-    "module": DocumentSchema(
-        purpose="面向领域任务理解、故障定位和代码修改，说明单个模块的完整上下文。",
+    "leaf-module": DocumentSchema(
+        purpose="以信道级子模块为主要最小文档单元，面向领域任务理解、故障定位和代码修改描述直接源码事实。",
         sections=(
-            SectionSpec("模块概述", ("给出一句话定位、所属层级、输入输出和关键源码目录。",)),
+            SectionSpec("叶子模块概述", ("说明是否为信道模块，并给出领域定位、所属层级、输入输出和直接源码目录。",)),
             SectionSpec("职责与边界", ("说明负责什么、不负责什么、上游和下游边界。",)),
             SectionSpec("领域定位与设计约束", ("说明领域问题、实时性、协议、内存、并发或硬件约束；设计意图无证据时不得补造。",)),
             SectionSpec("系统交互与接口关系", ("说明调用者、被调用者、接口、消息、回调、事件和跨模块数据传递。",)),
@@ -59,6 +59,21 @@ DOCUMENT_SCHEMAS: dict[str, DocumentSchema] = {
             SectionSpec("调试与故障定位", ("按现象给出排查顺序、代码位置、状态、日志或断点和验证方法；不得虚构日志。",)),
             SectionSpec("Agent 开发导航", ("说明常见修改入口、影响范围、工程风险和建议测试。",)),
             SectionSpec("证据、限制与待确认项", ("汇总源码证据、候选调用、未解析符号、条件编译和无法确认的信息。",)),
+        ),
+    ),
+    "module-summary": DocumentSchema(
+        purpose="基于已生成的直接子文档和本层直接源码，自底向上汇聚父模块，不重复复制叶子级实现细节。",
+        sections=(
+            SectionSpec("层级定位", ("说明本节点在通信基带系统中的层级、范围和父级位置。",)),
+            SectionSpec("子模块组成", ("列出直接子模块、子文档链接和每个子模块的一句话职责。",)),
+            SectionSpec("聚合职责与边界", ("总结父模块整体负责与不负责的能力，不重复罗列所有函数。",)),
+            SectionSpec("跨子模块协作", ("提炼子模块之间已确认的接口、调用、消息和依赖关系。",)),
+            SectionSpec("业务流程汇聚", ("从子流程中归纳跨信道或跨模块的主业务链路和关键分支。",)),
+            SectionSpec("公共数据与接口", ("总结跨子模块共享的数据结构、配置和父级公共接口。",)),
+            SectionSpec("状态、时序与资源约束", ("汇总跨子模块状态、Slot/Frame/TTI、并发、内存或硬件资源约束。",)),
+            SectionSpec("开发影响导航", ("说明修改某个子模块可能影响的兄弟模块、公共接口和回归范围。",)),
+            SectionSpec("子文档导航", ("提供直接子文档链接和推荐下钻顺序。",)),
+            SectionSpec("汇聚证据与限制", ("说明结论来自哪些子文档和本层源码，以及缺失或截断信息。",)),
         ),
     ),
     "data-structures": DocumentSchema(
@@ -100,6 +115,9 @@ DOCUMENT_SCHEMAS: dict[str, DocumentSchema] = {
         ),
     ),
 }
+
+# Compatibility for callers that used the pre-hierarchy module schema name.
+DOCUMENT_SCHEMAS["module"] = DOCUMENT_SCHEMAS["leaf-module"]
 
 
 def get_document_schema(document_type: str) -> DocumentSchema:

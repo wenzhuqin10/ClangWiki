@@ -13,6 +13,7 @@ workspace/
 ├── knowledge/
 │   ├── repository.json
 │   ├── modules.json
+│   ├── module_tree.json
 │   ├── symbols.json
 │   ├── relations.json
 │   └── source_coverage.json
@@ -26,6 +27,12 @@ workspace/
 
 所有文件使用 UTF-8。目标代码仓仅被读取；build、analysis、knowledge、tasks、logs 和 output
 均在用户明确指定的 workspace 内。
+
+## 模块层级记录
+
+`modules.json` 中每个节点记录 `source_path`、`parent_id`、`child_ids`、`depth`、`is_leaf` 和本层直接拥有的源码文件。`module_tree.json` 保存根节点和父子关系。
+
+信道级叶子路径由命令行 `--leaf-module-path` 指定。叶子路径以下的目录和文件仍属于同一信道文档；父节点文档通过已生成的直接子文档向上汇聚。父节点只保存本层直接拥有的源码，不复制子节点符号，避免同一事实被多层上下文重复计数。
 
 ## 符号记录
 
@@ -69,4 +76,3 @@ workspace/
 
 每篇文档拥有独立上下文文件。上下文含任务目标、模块文件、符号、关系和受 `--max-source-chars-per-task`
 控制的源码片段。该限制避免把整个仓库塞入一次模型请求；它是字符级保护，不等同于 GLM 服务端的精确 token 计数。
-

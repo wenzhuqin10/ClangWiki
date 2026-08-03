@@ -50,6 +50,7 @@ workspace/
     ├── README.md
     ├── Architecture.md
     ├── Modules/
+    │   └── <source-path>/index.md   # 信道叶子与父级汇总形成同构目录树
     ├── DataStructures.md
     ├── CallFlows.md
     └── APIReference.md
@@ -69,3 +70,18 @@ workspace/
 - 文档 Agent 只读：允许 `read`、`glob`、`grep`；拒绝 `bash`、`edit`、网络工具。
 - 目标仓库不会写入中间文件，所有产物均写入显式 workspace。
 - Clang 确定的事实与 LLM 的语义说明分开保存，未解析调用不会写成确定调用。
+
+## 基带信道级文档粒度
+
+生产环境建议显式指定每个信道级叶子路径：
+
+```powershell
+clangwiki generate `
+  --repo "D:\projects\target-repository" `
+  --workspace "D:\clangwiki-workspace" `
+  --model "provider/glm-5.1" `
+  --leaf-module-path "src/phy/pdsch" `
+  --leaf-module-path "src/phy/pusch"
+```
+
+ClangWiki 先生成信道级叶子文档，再逐层生成父模块、子系统、系统架构和首页。叶子路径以下的内部目录不会继续拆成独立文档。
