@@ -84,10 +84,10 @@ clangwiki generate `
   --workspace "D:\clangwiki-workspace" `
   --model "provider/glm-5.1" `
   --analyzer-executable "D:\projects\ClangWiki\bin\clangwiki-analyzer.exe" `
-  --leaf-module-path "src/phy/pdsch" `
-  --leaf-module-path "src/phy/pusch" `
-  --leaf-module-path "src/phy/pdcch" `
-  --leaf-module-path "src/phy/pucch"
+  --channel-module-path "src/phy/pdsch" `
+  --channel-module-path "src/phy/pusch" `
+  --channel-module-path "src/phy/pdcch" `
+  --channel-module-path "src/phy/pucch"
 ```
 
 程序只运行 CMake 的**配置**步骤以生成编译数据库，不执行 `cmake --build`，不会修改目标仓的
@@ -98,20 +98,23 @@ clangwiki generate `
 ```text
 --only architecture            只生成系统架构文档
 --only module                  只生成各模块文档
---leaf-module-path <path>      指定信道级叶子边界；每个信道重复一次
+--channel-module-path <path>   指定信道根目录；其直接子目录成为叶子
+--leaf-module-path <path>      高级覆盖：直接指定叶子；不能与上一参数并用
 --skip-cmake                   复用 workspace/build/compile_commands.json
 --skip-analysis                复用 workspace/analysis/*.json
 --opencode-executable nga      使用企业兼容启动器
 --timeout-seconds 1200         放宽单篇文档模型调用超时
 ```
 
-### 5.1 信道级叶子模块
+### 5.1 信道下一层叶子模块
 
-`--leaf-module-path` 使用目标仓根目录下的相对目录。指定 `src/phy/pdsch` 后，该目录下的编码、调制、资源映射等更深目录统一归入 PDSCH 叶子文档，不继续拆分。
+`--channel-module-path` 使用目标仓根目录下的相对目录。指定 `src/phy/pdsch` 后，`pdsch/encoder`、`pdsch/modulation`、`pdsch/mapping` 等直接子目录分别成为叶子。叶子目录内部更深的源码不继续拆分。
 
-框架先生成所有信道叶子文档，再生成 `src/phy`、`src` 等父级汇总，最后生成仓库架构和首页。父级文档主要总结子模块职责、跨模块协作、业务流程和公共约束，不重复叶子文档中的函数级细节。
+框架先生成信道内部叶子文档，再生成 PDSCH/PUSCH 信道汇总，然后生成 `src/phy`、`src` 等父级汇总，最后生成仓库架构和首页。直接位于 `pdsch` 根目录的源码作为 PDSCH 汇总的直接证据。
 
-如果不提供该参数，框架会在路径中尝试识别常见物理信道名称；若没有识别到，则退回第一层目录。生产仓建议始终显式配置，避免不同目录命名导致粒度变化。
+如果不提供边界参数，框架会尝试识别常见物理信道名称，并使用其直接子目录作为叶子；若信道没有子目录则退回信道自身，若没有识别到信道则退回第一层目录。生产仓建议显式配置。
+
+目录结构不规则时可以使用 `--leaf-module-path` 直接指定实际叶子路径。两类参数不能同时使用，路径不存在或信道下没有源码子目录时会明确报错。
 
 ## 6. 认证与权限
 

@@ -17,7 +17,7 @@ def test_context_marks_uncertain_calls(tmp_path: Path):
         ["src/demo.c"],
         [{"kind": "function", "qualified_name": "start", "file_path": "src/demo.c", "line_start": 1, "line_end": 1, "certainty": "compiler"}],
         source_path="src",
-        is_channel_leaf=True,
+        is_channel_child_leaf=True,
     )
     task = DocumentTask("leaf-module-src", "leaf-module", "src 信道级子模块", "Modules/src/index.md", ("src",), hierarchy_role="leaf")
     result = build_context(
@@ -45,7 +45,7 @@ def test_context_marks_uncertain_calls(tmp_path: Path):
     context = result.read_text(encoding="utf-8")
     assert "POSSIBLE_CALL" in context
     assert "## 叶子模块概述" in context
-    assert "节点类型：信道级叶子模块" in context
+    assert "节点类型：信道内叶子模块" in context
     assert "不得改名、遗漏、合并或增加二级章节" in context
 
 

@@ -73,15 +73,15 @@ workspace/
 
 ## 基带信道级文档粒度
 
-生产环境建议显式指定每个信道级叶子路径：
+生产环境建议显式指定每个信道根目录，由框架将其下一层功能目录作为叶子：
 
 ```powershell
 clangwiki generate `
   --repo "D:\projects\target-repository" `
   --workspace "D:\clangwiki-workspace" `
   --model "provider/glm-5.1" `
-  --leaf-module-path "src/phy/pdsch" `
-  --leaf-module-path "src/phy/pusch"
+  --channel-module-path "src/phy/pdsch" `
+  --channel-module-path "src/phy/pusch"
 ```
 
-ClangWiki 先生成信道级叶子文档，再逐层生成父模块、子系统、系统架构和首页。叶子路径以下的内部目录不会继续拆成独立文档。
+ClangWiki 将每个信道目录的直接子目录作为叶子，例如 `pdsch/encoder`、`pdsch/modulation` 和 `pdsch/mapping`。框架先生成这些最小文档，再汇总为 PDSCH 文档，随后逐层生成 PHY、系统架构和首页。

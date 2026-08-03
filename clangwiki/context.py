@@ -49,7 +49,7 @@ def build_context(
                 f"### {module.display_name} (`{module.module_id}`)",
                 f"- 源码路径：`{module.source_path or '.'}`",
                 f"- 层级深度：{module.depth}",
-                f"- 节点类型：{'信道级叶子模块' if module.is_channel_leaf else '最小叶子模块' if module.is_leaf else '父级汇总模块'}",
+                f"- 节点类型：{'信道内叶子模块' if module.is_channel_child_leaf else '最小叶子模块' if module.is_leaf else '信道父级汇总模块' if module.is_channel_root else '父级汇总模块'}",
                 f"- 父模块：`{parent.module_id}`" if parent else "- 父模块：无",
                 "- 子模块：" + (", ".join(f"`{child_id}`" for child_id in module.child_ids) or "无"),
                 "- 本层直接拥有的源码文件：",

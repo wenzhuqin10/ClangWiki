@@ -27,12 +27,21 @@ def _parser() -> argparse.ArgumentParser:
     generate.add_argument("--language", default="简体中文")
     generate.add_argument("--max-source-chars-per-task", type=int, default=36000)
     generate.add_argument(
+        "--channel-module-path",
+        action="append",
+        default=[],
+        help=(
+            "repository-relative channel directory whose immediate source subdirectories become leaves; "
+            "repeat for channels such as src/phy/pdsch and src/phy/pusch"
+        ),
+    )
+    generate.add_argument(
         "--leaf-module-path",
         action="append",
         default=[],
         help=(
-            "repository-relative directory treated as a leaf module boundary; repeat for each channel, "
-            "for example src/phy/pdsch and src/phy/pusch"
+            "advanced override: repository-relative directory treated directly as a leaf boundary; "
+            "do not combine with --channel-module-path"
         ),
     )
     generate.add_argument("--overwrite", action="store_true")
@@ -55,6 +64,7 @@ def main(argv: list[str] | None = None) -> int:
         max_source_chars_per_task=args.max_source_chars_per_task, overwrite=args.overwrite,
         skip_cmake=args.skip_cmake, skip_analysis=args.skip_analysis, only=tuple(args.only),
         leaf_module_paths=tuple(args.leaf_module_path),
+        channel_module_paths=tuple(args.channel_module_path),
     )
     try:
         outputs = GenerationPipeline(config, args.analyzer_executable).run()

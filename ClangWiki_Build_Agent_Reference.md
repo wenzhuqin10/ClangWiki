@@ -524,8 +524,11 @@ output/
 │       ├── index.md                 # src 父级汇总
 │       └── phy/
 │           ├── index.md             # PHY 子系统汇总
-│           ├── pdsch/index.md       # PDSCH 信道级叶子
-│           └── pusch/index.md       # PUSCH 信道级叶子
+│           ├── pdsch/
+│           │   ├── index.md         # PDSCH 信道汇总
+│           │   ├── encoder/index.md # PDSCH 编码叶子
+│           │   └── mapping/index.md # PDSCH 映射叶子
+│           └── pusch/index.md       # PUSCH 信道汇总
 ├── DataStructures.md
 ├── CallFlows.md
 └── APIReference.md
@@ -536,24 +539,24 @@ output/
 ```json
 [
   {
-    "task_id": "leaf-module-src--phy--pdsch",
+    "task_id": "leaf-module-src--phy--pdsch--encoder",
     "document_type": "leaf-module",
-    "title": "pdsch 信道级子模块",
-    "output_relative_path": "Modules/src/phy/pdsch/index.md",
-    "module_ids": ["src--phy--pdsch"],
+    "title": "encoder 信道内叶子模块",
+    "output_relative_path": "Modules/src/phy/pdsch/encoder/index.md",
+    "module_ids": ["src--phy--pdsch--encoder"],
     "hierarchy_role": "leaf",
     "child_document_paths": []
   },
   {
-    "task_id": "module-summary-src--phy",
+    "task_id": "module-summary-src--phy--pdsch",
     "document_type": "module-summary",
-    "title": "phy 模块汇总",
-    "output_relative_path": "Modules/src/phy/index.md",
-    "module_ids": ["src--phy"],
+    "title": "pdsch 信道汇总",
+    "output_relative_path": "Modules/src/phy/pdsch/index.md",
+    "module_ids": ["src--phy--pdsch"],
     "hierarchy_role": "aggregate",
     "child_document_paths": [
-      "Modules/src/phy/pdsch/index.md",
-      "Modules/src/phy/pusch/index.md"
+      "Modules/src/phy/pdsch/encoder/index.md",
+      "Modules/src/phy/pdsch/mapping/index.md"
     ]
   }
 ]
@@ -591,15 +594,15 @@ Context Builder 根据文档任务选择：
 
 ## Task Metadata
 
-- Task ID: leaf-module-src--phy--pdsch
+- Task ID: leaf-module-src--phy--pdsch--encoder
 - Document Type: leaf-module
-- Output: Modules/src/phy/pdsch/index.md
+- Output: Modules/src/phy/pdsch/encoder/index.md
 - Repository: D:\repo\demo
 
 ## Target Module
 
-- Module ID: src--phy--pdsch
-- Module Name: PDSCH
+- Module ID: src--phy--pdsch--encoder
+- Module Name: PDSCH Encoder
 
 ## Files
 
@@ -948,7 +951,7 @@ output:
 [KNOWLEDGE] 已构建 7 个模块
 [PLAN] 已生成 11 个文档任务
 [CONTEXT] 已生成 module_network_context.md
-[OPENCODE] 正在生成 Modules/src/phy/pdsch/index.md
+[OPENCODE] 正在生成 Modules/src/phy/pdsch/encoder/index.md
 [OUTPUT] 文档校验通过
 ```
 

@@ -31,10 +31,7 @@ def plan_documents(modules: dict[str, Module], only: tuple[str, ...] = ()) -> li
                 DocumentTask(
                     task_id=f"{document_type}-{module.module_id}",
                     document_type=document_type,
-                    title=(
-                        f"{module.display_name} "
-                        f"{'信道级子模块' if module.is_channel_leaf else '最小叶子模块' if module.is_leaf else '模块汇总'}"
-                    ),
+                    title=f"{module.display_name} {_module_title_suffix(module)}",
                     output_relative_path=module_document_path(module),
                     module_ids=(module.module_id,),
                     hierarchy_role=hierarchy_role,
@@ -78,3 +75,13 @@ def plan_documents(modules: dict[str, Module], only: tuple[str, ...] = ()) -> li
             )
         )
     return tasks
+
+
+def _module_title_suffix(module: Module) -> str:
+    if module.is_channel_child_leaf:
+        return "信道内叶子模块"
+    if module.is_leaf:
+        return "最小叶子模块"
+    if module.is_channel_root:
+        return "信道汇总"
+    return "模块汇总"

@@ -30,9 +30,9 @@ workspace/
 
 ## 模块层级记录
 
-`modules.json` 中每个节点记录 `source_path`、`parent_id`、`child_ids`、`depth`、`is_leaf` 和本层直接拥有的源码文件。`module_tree.json` 保存根节点和父子关系。
+`modules.json` 中每个节点记录 `source_path`、`parent_id`、`child_ids`、`depth`、`is_leaf`、`is_channel_root`、`is_channel_child_leaf` 和本层直接拥有的源码文件。`module_tree.json` 保存根节点和父子关系。
 
-信道级叶子路径由命令行 `--leaf-module-path` 指定。叶子路径以下的目录和文件仍属于同一信道文档；父节点文档通过已生成的直接子文档向上汇聚。父节点只保存本层直接拥有的源码，不复制子节点符号，避免同一事实被多层上下文重复计数。
+信道根路径由 `--channel-module-path` 指定，其直接源码子目录成为叶子。叶子路径以下的目录和文件仍属于同一最小文档；PDSCH 等信道节点通过直接子文档向上汇聚。父节点只保存本层直接拥有的源码，不复制子节点符号。
 
 ## 符号记录
 

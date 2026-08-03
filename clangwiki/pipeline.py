@@ -36,6 +36,7 @@ class GenerationPipeline:
             analysis,
             workspace / "knowledge",
             cfg.leaf_module_paths,
+            cfg.channel_module_paths,
         )
         tasks = plan_documents(modules, cfg.only)
         write_json(workspace / "tasks" / "tasks.json", [task.__dict__ for task in tasks])

@@ -9,8 +9,7 @@ from .io import write_json
 from .models import AnalysisBundle, Module
 
 
-# Used only when the caller does not provide explicit --leaf-module-path values.
-# Explicit repository paths always take precedence over this domain heuristic.
+# Used only when the caller does not provide explicit channel or leaf boundaries.
 BASEBAND_CHANNEL_NAMES = frozenset(
     {
         "pdsch",
@@ -32,18 +31,21 @@ def build_knowledge(
     analysis: AnalysisBundle,
     output_dir: Path,
     leaf_module_paths: tuple[str, ...] = (),
+    channel_module_paths: tuple[str, ...] = (),
 ) -> dict[str, Module]:
-    """Build a directory-backed hierarchy whose leaves stop at channel boundaries.
+    """Build a directory-backed hierarchy whose leaves sit below channel roots.
 
-    Source files below a configured channel path remain part of that channel leaf instead of
-    becoming smaller documents. Files outside configured leaves are assigned to their first
-    repository directory and become direct evidence of the corresponding parent module.
+    By default, the immediate source subdirectories of PDSCH/PUSCH-like channel roots become
+    leaves. Files directly owned by the channel root remain evidence for its parent summary.
+    Explicit leaf paths are retained as an advanced override for irregular repositories.
     """
 
     source_files = sorted({_normalise_path(str(row["path"])) for row in analysis.files})
-    configured_leaves = _resolve_leaf_paths(source_files, leaf_module_paths)
-    if leaf_module_paths:
-        _validate_explicit_leaf_paths(source_files, configured_leaves)
+    configured_leaves, channel_roots, leaf_strategy = _resolve_module_boundaries(
+        source_files,
+        leaf_module_paths,
+        channel_module_paths,
+    )
     owner_by_file = {path: _owner_path(path, configured_leaves) for path in source_files}
 
     direct_files_by_path: dict[str, list[str]] = defaultdict(list)
@@ -83,7 +85,11 @@ def build_knowledge(
             child_ids=children,
             depth=_depth(path),
             is_leaf=not children,
-            is_channel_leaf=path in configured_leaves,
+            is_channel_root=path in channel_roots,
+            is_channel_child_leaf=(
+                path in configured_leaves
+                and any(_parent_path(path) == channel_root for channel_root in channel_roots)
+            ),
         )
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -94,7 +100,8 @@ def build_knowledge(
             "analysis_mode": analysis.mode,
             "diagnostics": analysis.diagnostics,
             "leaf_module_paths": sorted(configured_leaves),
-            "leaf_strategy": "explicit" if leaf_module_paths else "baseband-channel-auto-or-top-level",
+            "channel_module_paths": sorted(channel_roots),
+            "leaf_strategy": leaf_strategy,
         },
     )
     write_json(
@@ -108,7 +115,8 @@ def build_knowledge(
                 "child_ids": list(module.child_ids),
                 "depth": module.depth,
                 "is_leaf": module.is_leaf,
-                "is_channel_leaf": module.is_channel_leaf,
+                "is_channel_root": module.is_channel_root,
+                "is_channel_child_leaf": module.is_channel_child_leaf,
                 "direct_files": module.files,
                 "symbol_count": len(module.symbols),
             }
@@ -127,7 +135,8 @@ def build_knowledge(
                     "child_ids": list(module.child_ids),
                     "depth": module.depth,
                     "is_leaf": module.is_leaf,
-                    "is_channel_leaf": module.is_channel_leaf,
+                    "is_channel_root": module.is_channel_root,
+                    "is_channel_child_leaf": module.is_channel_child_leaf,
                 }
                 for module in modules.values()
             },
@@ -139,11 +148,39 @@ def build_knowledge(
     return modules
 
 
-def _resolve_leaf_paths(files: list[str], configured: tuple[str, ...]) -> set[str]:
-    if configured:
-        leaves = {_normalise_path(path).strip("/") for path in configured}
-        return {path for path in leaves if path and path != "."}
+def _resolve_module_boundaries(
+    files: list[str],
+    configured_leaves: tuple[str, ...],
+    configured_channels: tuple[str, ...],
+) -> tuple[set[str], set[str], str]:
+    if configured_leaves and configured_channels:
+        raise ModuleConfigurationError(
+            "--channel-module-path 与 --leaf-module-path 不能同时使用。"
+            "前者把信道的直接子目录作为叶子，后者直接指定叶子边界。"
+        )
 
+    if configured_leaves:
+        leaves = _normalise_configured_paths(configured_leaves)
+        _validate_configured_paths(files, leaves, "--leaf-module-path")
+        _validate_non_overlapping_leaves(leaves)
+        return leaves, set(), "explicit-leaf"
+
+    if configured_channels:
+        channel_roots = _normalise_configured_paths(configured_channels)
+        _validate_configured_paths(files, channel_roots, "--channel-module-path")
+        _validate_non_overlapping_paths(channel_roots, "信道根目录")
+        leaves = _channel_child_leaves(files, channel_roots, require_children=True)
+        return leaves, channel_roots, "explicit-channel-children"
+
+    channel_roots = _detect_channel_roots(files)
+    if channel_roots:
+        leaves = _channel_child_leaves(files, channel_roots, require_children=False)
+        return leaves, channel_roots, "auto-channel-children"
+
+    return {_fallback_owner(path) for path in files}, set(), "top-level-fallback"
+
+
+def _detect_channel_roots(files: list[str]) -> set[str]:
     detected: set[str] = set()
     for file_path in files:
         directories = list(PurePosixPath(file_path).parts[:-1])
@@ -151,34 +188,74 @@ def _resolve_leaf_paths(files: list[str], configured: tuple[str, ...]) -> set[st
             if _normalise_channel_name(part) in BASEBAND_CHANNEL_NAMES:
                 detected.add("/".join(directories[: index + 1]))
                 break
-    if detected:
-        return detected
-
-    return {_fallback_owner(path) for path in files}
+    return detected
 
 
-def _validate_explicit_leaf_paths(files: list[str], leaves: set[str]) -> None:
+def _normalise_configured_paths(paths: tuple[str, ...]) -> set[str]:
+    values = {_normalise_path(path).strip("/") for path in paths}
+    return {path for path in values if path and path != "."}
+
+
+def _validate_configured_paths(files: list[str], paths: set[str], option: str) -> None:
     unmatched = sorted(
-        leaf for leaf in leaves if not any(path.startswith(f"{leaf}/") or path == leaf for path in files)
+        configured
+        for configured in paths
+        if not any(path.startswith(f"{configured}/") or path == configured for path in files)
     )
     if unmatched:
         raise ModuleConfigurationError(
-            "以下 --leaf-module-path 未覆盖任何已分析源码文件："
+            f"以下 {option} 未覆盖任何已分析源码文件："
             + ", ".join(unmatched)
             + "。路径必须相对于代码仓根目录，并使用源码目录而不是输出目录。"
         )
 
+
+def _validate_non_overlapping_leaves(leaves: set[str]) -> None:
+    _validate_non_overlapping_paths(leaves, "叶子模块路径")
+
+
+def _validate_non_overlapping_paths(paths: set[str], label: str) -> None:
     overlapping = sorted(
         (parent, child)
-        for parent in leaves
-        for child in leaves
+        for parent in paths
+        for child in paths
         if parent != child and child.startswith(f"{parent}/")
     )
     if overlapping:
         pairs = ", ".join(f"{parent} -> {child}" for parent, child in overlapping)
         raise ModuleConfigurationError(
-            "叶子模块路径不能互为祖先和后代，否则最小文档边界不明确：" + pairs
+            f"{label}不能互为祖先和后代，否则文档边界不明确：" + pairs
         )
+
+
+def _channel_child_leaves(files: list[str], channel_roots: set[str], require_children: bool) -> set[str]:
+    leaves: set[str] = set()
+    missing_children: list[str] = []
+    for channel_root in sorted(channel_roots):
+        children: set[str] = set()
+        prefix = f"{channel_root}/"
+        for file_path in files:
+            if not file_path.startswith(prefix):
+                continue
+            relative_parts = PurePosixPath(file_path[len(prefix):]).parts
+            if len(relative_parts) > 1:
+                children.add(f"{channel_root}/{relative_parts[0]}")
+        if children:
+            leaves.update(children)
+        elif require_children:
+            missing_children.append(channel_root)
+        else:
+            # An automatically detected channel without child source directories remains a leaf,
+            # because there is no lower repository granularity available.
+            leaves.add(channel_root)
+
+    if missing_children:
+        raise ModuleConfigurationError(
+            "以下信道目录没有包含已分析源码的直接子目录，无法按下一层生成叶子文档："
+            + ", ".join(missing_children)
+            + "。请调整目录结构，或改用 --leaf-module-path 显式指定实际叶子。"
+        )
+    return leaves
 
 
 def _owner_path(file_path: str, leaves: set[str]) -> str:

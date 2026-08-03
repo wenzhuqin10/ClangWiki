@@ -22,6 +22,7 @@ class RunConfig:
     skip_analysis: bool = False
     only: tuple[str, ...] = ()
     leaf_module_paths: tuple[str, ...] = ()
+    channel_module_paths: tuple[str, ...] = ()
 
 
 @dataclass
@@ -58,4 +59,5 @@ class Module:
     child_ids: tuple[str, ...] = ()
     depth: int = 0
     is_leaf: bool = True
-    is_channel_leaf: bool = False
+    is_channel_root: bool = False
+    is_channel_child_leaf: bool = False

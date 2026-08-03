@@ -37,7 +37,7 @@ Compiler Analysis                        [Clang/LibTooling + ClangWiki]
 Knowledge and Planning                   [ClangWiki]
 ├── JSON artifacts and source coverage
 ├── hierarchical module tree
-├── channel-level leaf boundaries
+├── channel roots and child-level leaf boundaries
 ├── bottom-up document plan
 └── one task = one output Markdown file
         │
@@ -61,21 +61,21 @@ Markdown validator and writer            [ClangWiki]
 
 ## 3. 分层文档生成
 
-通信基带代码仓按“源码层级树 + 信道叶子边界”组织文档。PDSCH、PUSCH、PDCCH 等信道级子模块是最小文档单元，其内部更深的 `encoder`、`mapper` 等目录不会再拆成独立文档。
+通信基带代码仓按“源码层级树 + 信道根目录”组织文档。PDSCH、PUSCH、PDCCH 等信道目录是父级汇总节点，其直接子目录（例如 `encoder`、`modulation`、`mapper`、`dmrs`）是最小文档单元。
 
 ```text
-信道级叶子文档（直接读取 Clang 事实和源码）
+信道下一层叶子文档（直接读取 Clang 事实和源码）
         ↓
-父模块汇总（读取直接子文档和本层直接源码）
+PDSCH/PUSCH 信道汇总（读取直接子文档和信道根源码）
         ↓
-子系统汇总（继续读取直接子文档）
+PHY 等子系统汇总（继续读取直接子文档）
         ↓
 Architecture.md
         ↓
 README.md
 ```
 
-生产环境应使用重复的 `--leaf-module-path` 明确指定仓库相对路径。自动识别仅作为未配置时的辅助策略，不能替代仓库维护者对模块边界的确认。
+生产环境应使用重复的 `--channel-module-path` 明确信道根目录。框架自动将每个信道根的直接源码子目录作为叶子。`--leaf-module-path` 仅用于目录结构不规则时直接覆盖叶子边界，不能与信道根参数同时使用。
 
 ## 4. 分析模式
 
