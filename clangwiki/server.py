@@ -358,8 +358,18 @@ def _read_json(path: Path, fallback: Any) -> Any:
 
 
 def serve(config: RunConfig, analyzer_executable: str | None, host: str, port: int) -> None:
-    server = ClangWikiServer((host, port), config, analyzer_executable)
-    print(f"ClangWiki UI: http://{host}:{port}/")
+    actual_port = port
+    try:
+        server = ClangWikiServer((host, actual_port), config, analyzer_executable)
+    except OSError as exc:
+        # Windows development machines frequently reserve 8080 for another local service.
+        # Keep an explicitly requested port authoritative except for the historical default.
+        if port != 8080:
+            raise
+        actual_port = 8081
+        server = ClangWikiServer((host, actual_port), config, analyzer_executable)
+        print(f"Port 8080 is unavailable ({exc}); using {actual_port} instead.")
+    print(f"ClangWiki UI: http://{host}:{actual_port}/")
     print(f"Repository: {config.repo}")
     print("Press Ctrl+C to stop the local server.")
     try:

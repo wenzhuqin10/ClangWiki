@@ -66,7 +66,7 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--skip-cmake", action="store_true")
     serve.add_argument("--skip-analysis", action="store_true")
     serve.add_argument("--host", default="127.0.0.1", help="bind address; localhost is recommended")
-    serve.add_argument("--port", type=int, default=8080)
+    serve.add_argument("--port", type=int, default=8081)
     return parser
 
 

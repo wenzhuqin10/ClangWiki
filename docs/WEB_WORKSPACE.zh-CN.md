@@ -48,10 +48,10 @@ clangwiki serve `
   --channel-module-path "src/phy/pdsch" `
   --channel-module-path "src/phy/pusch" `
   --host 127.0.0.1 `
-  --port 8080
+  --port 8081
 ```
 
-然后打开 `http://127.0.0.1:8080/`。
+然后打开 `http://127.0.0.1:8081/`。
 
 模型 ID 必须使用目标设备执行 `opencode models` 显示的真实值。Web 页面不提供 API Key 输入框，这是有意的安全边界。
 
