@@ -28,3 +28,9 @@ class OpenCodeError(ClangWikiError):
 
 class MarkdownValidationError(ClangWikiError):
     pass
+
+
+class GenerationCancelled(ClangWikiError):
+    """Raised when a running generation is cancelled by the local web UI."""
+
+    pass

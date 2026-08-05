@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
+from typing import Callable
 
 from .analyzer import ClangAnalyzer
 from .build import configure_cmake, validate_compilation_database, validate_repository
 from .context import build_context
-from .errors import ClangWikiError
+from .errors import ClangWikiError, GenerationCancelled
 from .io import read_json, write_json, write_text
 from .knowledge import build_knowledge
 from .models import AnalysisBundle, RunConfig
@@ -15,12 +17,30 @@ from .planner import plan_documents
 
 
 class GenerationPipeline:
-    def __init__(self, config: RunConfig, analyzer_executable: str | None = None) -> None:
+    def __init__(
+        self,
+        config: RunConfig,
+        analyzer_executable: str | None = None,
+        progress_sink: Callable[[dict[str, object]], None] | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> None:
         self.config = config
         self.analyzer_executable = analyzer_executable
+        self.progress_sink = progress_sink
+        self.cancel_event = cancel_event
+
+    def _emit(self, stage: str, message: str, progress: int | None = None) -> None:
+        if self.progress_sink is not None:
+            self.progress_sink({"stage": stage, "message": message, "progress": progress})
+
+    def _check_cancelled(self) -> None:
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            raise GenerationCancelled("ClangWiki generation was cancelled")
 
     def run(self) -> list[Path]:
         cfg = self.config
+        self._check_cancelled()
+        self._emit("start", "Starting ClangWiki generation", 0)
         repo = validate_repository(cfg.repo)
         workspace = cfg.workspace.expanduser().resolve()
         workspace.mkdir(parents=True, exist_ok=True)
@@ -28,8 +48,12 @@ class GenerationPipeline:
         write_text(log, "[START] ClangWiki pipeline started\n")
         compilation_database = self._compilation_database(repo)
         self._log(log, f"[BUILD] compilation database: {compilation_database}")
+        self._emit("build", "Compilation database is ready", 12)
+        self._check_cancelled()
         analysis = self._analysis(repo, compilation_database)
         self._log(log, f"[ANALYZE] mode={analysis.mode}, symbols={len(analysis.symbols)}, relations={len(analysis.relations)}")
+        self._emit("analysis", f"Clang analysis: {len(analysis.symbols)} symbols, {len(analysis.relations)} relations", 28)
+        self._check_cancelled()
         modules = build_knowledge(
             repo,
             compilation_database,
@@ -41,9 +65,11 @@ class GenerationPipeline:
         tasks = plan_documents(modules, cfg.only)
         write_json(workspace / "tasks" / "tasks.json", [task.__dict__ for task in tasks])
         self._log(log, f"[PLAN] {len(tasks)} document tasks")
+        self._emit("plan", f"Planned {len(tasks)} documents", 38)
         runner = OpenCodeRunner(cfg.opencode_executable, cfg.model, cfg.agent, cfg.timeout_seconds)
         generated: list[Path] = []
-        for task in tasks:
+        for index, task in enumerate(tasks, start=1):
+            self._check_cancelled()
             context_file = workspace / "tasks" / "contexts" / f"{task.task_id}.md"
             build_context(
                 task,
@@ -56,6 +82,7 @@ class GenerationPipeline:
                 cfg.output,
             )
             self._log(log, f"[CONTEXT] {context_file.name}")
+            self._emit("context", f"Prepared {task.title}", 38 + int(index / max(1, len(tasks)) * 12))
             stdout_log = workspace / "logs" / "opencode" / f"{task.task_id}.stdout.txt"
             stderr_log = workspace / "logs" / "opencode" / f"{task.task_id}.stderr.txt"
             try:
@@ -67,7 +94,9 @@ class GenerationPipeline:
                 raise
             generated.append(destination)
             self._log(log, f"[OUTPUT] {destination}")
+            self._emit("document", f"Generated {destination}", 50 + int(index / max(1, len(tasks)) * 48))
         self._log(log, "[DONE] ClangWiki pipeline completed")
+        self._emit("done", f"Generated {len(generated)} documents", 100)
         return generated
 
     def _compilation_database(self, repo: Path) -> Path:
