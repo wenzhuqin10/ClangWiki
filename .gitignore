@@ -4,8 +4,8 @@ __pycache__/
 .pytest_cache/
 .coverage
 workspace/
+simulation/workspace/
 build/
 *.egg-info/
 *.db
 .env
-
