@@ -3,37 +3,37 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ClangWiki Workspace</title>
+  <title>ClangWiki 本地工作台</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <div class="app-shell">
     <aside class="sidebar">
-      <div class="brand"><span class="brand-mark">C</span><div><strong>ClangWiki</strong><small>Compiler knowledge workspace</small></div></div>
-      <div class="repo-card"><div class="eyebrow">REPOSITORY</div><div id="repo-name" class="repo-name">Loading…</div><div id="repo-path" class="muted mono"></div></div>
-      <nav class="nav-tabs" aria-label="Main navigation">
-        <button class="nav-tab active" data-view="overview">Overview</button>
-        <button class="nav-tab" data-view="documents">Documents</button>
-        <button class="nav-tab" data-view="relations">Relations</button>
-        <button class="nav-tab" data-view="jobs">Generation jobs</button>
+      <div class="brand"><span class="brand-mark">C</span><div><strong>ClangWiki</strong><small>编译器辅助知识工作台</small></div></div>
+      <div class="repo-card"><div class="eyebrow">当前代码仓</div><div id="repo-name" class="repo-name">正在加载…</div><div id="repo-path" class="muted mono"></div></div>
+      <nav class="nav-tabs" aria-label="主导航">
+        <button class="nav-tab active" data-view="overview">总览</button>
+        <button class="nav-tab" data-view="documents">文档</button>
+        <button class="nav-tab" data-view="relations">关系图</button>
+        <button class="nav-tab" data-view="jobs">生成任务</button>
       </nav>
-      <div class="sidebar-footer"><span class="status-dot" id="status-dot"></span><span id="server-status">Connecting</span><span class="version" id="version"></span></div>
+      <div class="sidebar-footer"><span class="status-dot" id="status-dot"></span><span id="server-status">正在连接</span><span class="version" id="version"></span></div>
     </aside>
 
     <main class="main-content">
-      <header class="topbar"><div><div class="eyebrow">LOCAL DEVELOPMENT WORKSPACE</div><h1 id="page-title">Repository overview</h1></div><div class="top-actions"><button class="secondary" id="refresh-btn">Refresh</button><button class="primary" id="generate-btn">Generate Wiki</button></div></header>
+      <header class="topbar"><div><div class="eyebrow">本地开发工作台</div><h1 id="page-title">代码仓总览</h1></div><div class="top-actions"><button class="secondary" id="refresh-btn">刷新</button><button class="primary" id="generate-btn">生成 Wiki</button></div></header>
 
       <section id="overview-view" class="view active">
-        <div class="hero-grid"><div class="hero-card"><div class="eyebrow">COMPILER-ASSISTED DOCUMENTATION</div><h2>Understand the repository from channel leaves upward.</h2><p>ClangWiki combines CMake, Clang facts and your authenticated <span class="mono">opencode run</span> workflow. No API key is stored here.</p><div class="hero-meta"><span id="analysis-mode">Analysis: —</span><span id="model-name">Model: —</span></div></div><div class="progress-card"><div class="card-title">Latest generation</div><div class="progress-ring" id="progress-ring"><span id="progress-value">—</span></div><div id="progress-message" class="muted">No job running</div><button class="text-button" data-view="jobs">View job history →</button></div></div>
-        <div class="metric-grid"><div class="metric"><span>Modules</span><strong id="metric-modules">—</strong><small>hierarchical nodes</small></div><div class="metric"><span>Leaf documents</span><strong id="metric-leaves">—</strong><small>smallest evidence units</small></div><div class="metric"><span>Relations</span><strong id="metric-relations">—</strong><small>compiler facts</small></div><div class="metric"><span>Markdown files</span><strong id="metric-documents">—</strong><small>generated artifacts</small></div></div>
-        <div class="two-col"><section class="panel"><div class="panel-heading"><div><div class="eyebrow">MODULE HIERARCHY</div><h3>Repository map</h3></div><span class="badge" id="tree-badge">—</span></div><div id="module-tree" class="module-tree"><div class="empty">No analysis artifacts yet.</div></div></section><section class="panel"><div class="panel-heading"><div><div class="eyebrow">DOCUMENT NAVIGATION</div><h3>Generated Wiki</h3></div><button class="text-button" data-view="documents">Open all →</button></div><div id="document-preview" class="document-preview"><div class="empty">Generate a Wiki to see documents here.</div></div></section></div>
+        <div class="hero-grid"><div class="hero-card"><div class="eyebrow">编译器辅助文档</div><h2>从信道叶子模块开始，逐层理解整个代码仓。</h2><p>ClangWiki 组合 CMake、Clang 静态事实和已认证的 <span class="mono">opencode run</span> 工作流。本地工作台不保存 API Key。</p><div class="hero-meta"><span id="analysis-mode">分析模式：—</span><span id="model-name">模型：—</span></div></div><div class="progress-card"><div class="card-title">最近一次生成</div><div class="progress-ring" id="progress-ring"><span id="progress-value">—</span></div><div id="progress-message" class="muted">当前没有运行中的任务</div><button class="text-button" data-view="jobs">查看任务记录 →</button></div></div>
+        <div class="metric-grid"><div class="metric"><span>模块节点</span><strong id="metric-modules">—</strong><small>层级结构节点</small></div><div class="metric"><span>叶子文档</span><strong id="metric-leaves">—</strong><small>最小证据单元</small></div><div class="metric"><span>关系数量</span><strong id="metric-relations">—</strong><small>Clang 分析事实</small></div><div class="metric"><span>Markdown 文档</span><strong id="metric-documents">—</strong><small>已生成产物</small></div></div>
+        <div class="two-col"><section class="panel"><div class="panel-heading"><div><div class="eyebrow">模块层级</div><h3>代码仓结构</h3></div><span class="badge" id="tree-badge">—</span></div><div id="module-tree" class="module-tree"><div class="empty">尚未发现分析产物。</div></div></section><section class="panel"><div class="panel-heading"><div><div class="eyebrow">文档导航</div><h3>生成的 Wiki</h3></div><button class="text-button" data-view="documents">查看全部 →</button></div><div id="document-preview" class="document-preview"><div class="empty">生成 Wiki 后，文档会显示在这里。</div></div></section></div>
       </section>
 
-      <section id="documents-view" class="view"><div class="section-heading"><div><div class="eyebrow">DOCUMENTS</div><h2>Evidence-backed Markdown</h2><p>Leaf documents are generated first; parent summaries are assembled bottom-up.</p></div><input id="document-filter" class="search" placeholder="Filter documents…"></div><div class="document-layout"><div id="document-list" class="document-list"></div><article id="document-content" class="markdown-view"><div class="empty">Select a document.</div></article></div></section>
+      <section id="documents-view" class="view"><div class="section-heading"><div><div class="eyebrow">文档浏览</div><h2>有证据支撑的 Markdown</h2><p>先生成叶子文档，再按照模块层级自底向上汇总。</p></div><input id="document-filter" class="search" placeholder="筛选文档…"></div><div class="document-layout"><div id="document-list" class="document-list"></div><article id="document-content" class="markdown-view"><div class="empty">请先选择一篇文档。</div></article></div></section>
 
-      <section id="relations-view" class="view"><div class="section-heading"><div><div class="eyebrow">RELATIONS</div><h2>Compiler relation graph</h2><p>Edges are rendered from Clang analysis artifacts. Uncertain relations remain labelled as such.</p></div></div><section class="panel graph-panel"><div id="relation-legend" class="legend"><span><i class="legend-dot compiler"></i> compiler fact</span><span><i class="legend-dot possible"></i> candidate relation</span></div><svg id="relation-graph" viewBox="0 0 1000 620" role="img" aria-label="Repository relation graph"></svg><div id="relation-empty" class="empty">No relation artifacts yet.</div></section></section>
+      <section id="relations-view" class="view"><div class="section-heading"><div><div class="eyebrow">代码关系</div><h2>Clang 关系图</h2><p>关系来自 Clang 分析产物；不确定关系会单独标记。</p></div></div><section class="panel graph-panel"><div id="relation-legend" class="legend"><span><i class="legend-dot compiler"></i> 编译器事实</span><span><i class="legend-dot possible"></i> 候选关系</span></div><svg id="relation-graph" viewBox="0 0 1000 620" role="img" aria-label="代码仓关系图"></svg><div id="relation-empty" class="empty">尚未发现关系分析产物。</div></section></section>
 
-      <section id="jobs-view" class="view"><div class="section-heading"><div><div class="eyebrow">GENERATION</div><h2>Generation jobs</h2><p>Each run executes the existing pipeline and calls the already authenticated OpenCode CLI.</p></div><button class="primary" id="generate-btn-secondary">New generation</button></div><section class="panel"><div id="job-list" class="job-list"><div class="empty">No jobs started.</div></div></section></section>
+      <section id="jobs-view" class="view"><div class="section-heading"><div><div class="eyebrow">文档生成</div><h2>生成任务</h2><p>每次任务复用现有 Pipeline，并调用设备上已认证的 OpenCode CLI。</p></div><button class="primary" id="generate-btn-secondary">新建生成任务</button></div><section class="panel"><div id="job-list" class="job-list"><div class="empty">还没有生成任务。</div></div></section></section>
     </main>
   </div>
   <div id="toast" class="toast" aria-live="polite"></div>

@@ -1,24 +1,269 @@
-const state={status:null,tree:null,relations:[],documents:[],selectedDocument:null,activeJob:null};
-const $=selector=>document.querySelector(selector);
-const $$=selector=>Array.from(document.querySelectorAll(selector));
-async function api(path,options={}){const response=await fetch(path,{headers:{'Content-Type':'application/json',...(options.headers||{})},...options});const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.error||`HTTP ${response.status}`);return data}
-function esc(value){return String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function toast(message){const node=$('#toast');node.textContent=message;node.classList.add('show');setTimeout(()=>node.classList.remove('show'),3200)}
-function setView(view){$$('.view').forEach(n=>n.classList.toggle('active',n.id===`${view}-view`));$$('.nav-tab').forEach(n=>n.classList.toggle('active',n.dataset.view===view));const titles={overview:'Repository overview',documents:'Generated documents',relations:'Compiler relations',jobs:'Generation jobs'};$('#page-title').textContent=titles[view]||titles.overview}
-function prettyPath(path){return path.split('/').filter(Boolean).join(' / ')}
-function refreshOverview(){const s=state.status||{};const repo=s.repo||'Repository';$('#repo-name').textContent=repo.split(/[\\/]/).filter(Boolean).pop()||repo;$('#repo-path').textContent=repo;$('#version').textContent=s.version?`v${s.version}`:'';$('#analysis-mode').textContent=`Analysis: ${s.analysis_mode||'not-run'}`;$('#model-name').textContent=`Model: ${s.model||'—'}`;const modules=(state.tree?.modules||[]);$('#metric-modules').textContent=modules.length;$('#metric-leaves').textContent=modules.filter(x=>x.is_leaf).length;$('#metric-relations').textContent=state.relations.length;$('#metric-documents').textContent=state.documents.length;$('#tree-badge').textContent=`${modules.length} nodes`;$('#status-dot').classList.toggle('ready',true);$('#server-status').textContent='Local server ready';renderTree();renderPreview()}
-function renderTree(){const nodes=state.tree?.tree?.nodes||{};const roots=state.tree?.tree?.roots||[];const byId={};(state.tree?.modules||[]).forEach(n=>byId[n.module_id]=n);if(!roots.length){$('#module-tree').innerHTML='<div class="empty">No analysis artifacts yet.</div>';return}const build=id=>{const n=nodes[id]||byId[id]||{};const children=n.child_ids||[];return `<div class="tree-node"><div class="tree-row"><button class="tree-toggle">${children.length?'▾':'·'}</button><span class="tree-label" data-doc="${esc(moduleDocPath(n))}">${esc(n.display_name||id)}</span><span class="tree-type">${n.is_leaf?'leaf':n.is_channel_root?'channel':'summary'}</span></div>${children.map(build).join('')}</div>`};$('#module-tree').innerHTML=roots.map(build).join('');$$('[data-doc]').forEach(n=>n.addEventListener('click',()=>openDocument(n.dataset.doc)))}
-function moduleDocPath(node){return node.source_path?`Modules/${node.source_path}/index.md`:''}
-function renderPreview(){const docs=state.documents.slice(0,8);$('#document-preview').innerHTML=docs.length?docs.map(docLink).join(''):'<div class="empty">Generate a Wiki to see documents here.</div>';$$('[data-document]').forEach(n=>n.addEventListener('click',()=>openDocument(n.dataset.document)))}
-function docLink(doc){return `<div class="doc-link" data-document="${esc(doc.path)}"><div><strong>${esc(doc.title)}</strong><small>${esc(prettyPath(doc.path))}</small></div><span class="muted">›</span></div>`}
-function renderDocuments(){const query=($('#document-filter')?.value||'').toLowerCase();const docs=state.documents.filter(d=>`${d.title} ${d.path}`.toLowerCase().includes(query));$('#document-list').innerHTML=docs.length?docs.map(docLink).join(''):'<div class="empty">No matching documents.</div>';$$('[data-document]').forEach(n=>n.addEventListener('click',()=>openDocument(n.dataset.document)));if(state.selectedDocument)$$('[data-document]').forEach(n=>n.classList.toggle('selected',n.dataset.document===state.selectedDocument))}
-async function openDocument(path){if(!path)return;try{const doc=await api(`/api/document?path=${encodeURIComponent(path)}`);state.selectedDocument=doc.path;$('#document-content').innerHTML=markdown(doc.content);setView('documents');renderDocuments()}catch(error){toast(error.message)}}
-function markdown(source){const lines=esc(source).split('\n');let html='',inCode=false,code=[];for(const line of lines){if(line.startsWith('```')){if(inCode){html+=`<pre><code>${code.join('\n')}</code></pre>`;code=[];inCode=false}else inCode=true;continue}if(inCode){code.push(line);continue}if(line.startsWith('# '))html+=`<h1>${inline(line.slice(2))}</h1>`;else if(line.startsWith('## '))html+=`<h2>${inline(line.slice(3))}</h2>`;else if(line.startsWith('### '))html+=`<h3>${inline(line.slice(4))}</h3>`;else if(/^[-*] /.test(line))html+=`<li>${inline(line.slice(2))}</li>`;else if(line.startsWith('> '))html+=`<blockquote>${inline(line.slice(2))}</blockquote>`;else if(line.trim())html+=`<p>${inline(line)}</p>`}if(inCode)html+=`<pre><code>${code.join('\n')}</code></pre>`;return html||'<div class="empty">Empty document.</div>'}
-function inline(value){return value.replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')}
-function renderGraph(){const svg=$('#relation-graph'),empty=$('#relation-empty');const edges=state.relations.filter(r=>r.source&&r.target).slice(0,80);if(!edges.length){svg.innerHTML='';empty.style.display='block';return}empty.style.display='none';const names=[...new Set(edges.flatMap(e=>[e.source,e.target]))].slice(0,28),index={};names.forEach((name,i)=>index[name]=i);const points=names.map((name,i)=>{const x=80+(i%4)*225,y=60+Math.floor(i/4)*77;return {name,x,y}});const nodeByName=Object.fromEntries(points.map(p=>[p.name,p]));const defs='<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#52698f"/></marker></defs>';const lines=edges.filter(e=>nodeByName[e.source]&&nodeByName[e.target]).map(e=>{const a=nodeByName[e.source],b=nodeByName[e.target],possible=e.certainty==='lexical'||e.kind==='POSSIBLE_CALL';return `<line class="graph-edge ${possible?'possible':''}" x1="${a.x+95}" y1="${a.y+18}" x2="${b.x}" y2="${b.y+18}" marker-end="url(#arrow)"/>`}).join('');const nodes=points.map(p=>`<g class="graph-node"><rect x="${p.x}" y="${p.y}" width="190" height="38" rx="8"/><text x="${p.x+10}" y="${p.y+24}">${esc(p.name).slice(0,25)}</text></g>`).join('');svg.innerHTML=defs+lines+nodes}
-function renderJobs(){const jobs=state.jobs||[];$('#job-list').innerHTML=jobs.length?jobs.slice().reverse().map(job=>`<div class="job-row"><div><div class="job-status ${esc(job.status)}">${esc(job.status)}</div><small class="muted mono">${esc(job.job_id)}</small></div><div><div class="job-progress"><i style="width:${job.progress||0}%"></i></div><small class="muted">${esc(job.message||'—')}</small></div><div class="muted">${job.progress||0}%</div></div>`).join(''):'<div class="empty">No jobs started.</div>'}
-function updateProgress(job){if(!job)return;const p=job.progress||0;$('#progress-value').textContent=job.status==='completed'?'✓':`${p}%`;$('#progress-message').textContent=job.message||job.status;$('#progress-ring').style.background=`conic-gradient(var(--accent) ${p*3.6}deg,var(--panel2) 0deg)`;state.activeJob=job}
-async function loadAll(){try{const [status,tree,relations,documents,jobs]=await Promise.all([api('/api/status'),api('/api/tree'),api('/api/relations'),api('/api/documents'),api('/api/jobs')]);state.status=status;state.tree=tree;state.relations=relations.relations||[];state.documents=documents.documents||[];state.jobs=jobs.jobs||[];refreshOverview();renderDocuments();renderGraph();renderJobs();const active=state.jobs.find(j=>j.status==='running'||j.status==='queued');if(active)subscribe(active.job_id);else if(state.jobs.length)updateProgress(state.jobs[state.jobs.length-1])}catch(error){$('#server-status').textContent='Server unavailable';toast(error.message)}}
-function subscribe(jobId){const source=new EventSource(`/api/jobs/${jobId}/events`);source.onmessage=event=>{const data=JSON.parse(event.data);if(data.type==='complete'){source.close();state.jobs=state.jobs.filter(j=>j.job_id!==jobId).concat(data);updateProgress(data);loadAll()}else{updateProgress({...state.activeJob,...data,status:'running'});renderJobs()}};source.onerror=()=>source.close()}
-async function startGeneration(){try{const job=await api('/api/generate',{method:'POST',body:JSON.stringify({})});state.jobs=(state.jobs||[]).concat(job);updateProgress(job);setView('jobs');renderJobs();subscribe(job.job_id);toast('Generation started')}catch(error){toast(error.message)}}
-$$('.nav-tab,[data-view]').forEach(n=>n.addEventListener('click',()=>setView(n.dataset.view)));$('#refresh-btn').addEventListener('click',loadAll);$('#generate-btn').addEventListener('click',startGeneration);$('#generate-btn-secondary').addEventListener('click',startGeneration);$('#document-filter').addEventListener('input',renderDocuments);loadAll();
+const state = {
+  status: null,
+  tree: null,
+  relations: [],
+  documents: [],
+  jobs: [],
+  selectedDocument: null,
+  activeJob: null,
+};
+
+const $ = (selector) => document.querySelector(selector);
+const $$ = (selector) => Array.from(document.querySelectorAll(selector));
+
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    ...options,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+  return data;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[char]));
+}
+
+function showToast(message) {
+  const node = $("#toast");
+  node.textContent = message;
+  node.classList.add("show");
+  window.setTimeout(() => node.classList.remove("show"), 3200);
+}
+
+function setView(view) {
+  $$(".view").forEach((node) => node.classList.toggle("active", node.id === `${view}-view`));
+  $$(".nav-tab").forEach((node) => node.classList.toggle("active", node.dataset.view === view));
+  const titles = {
+    overview: "代码仓总览", documents: "生成的文档", relations: "代码关系图", jobs: "生成任务",
+  };
+  $("#page-title").textContent = titles[view] || titles.overview;
+}
+
+function prettyPath(path) {
+  return path.split("/").filter(Boolean).join(" / ");
+}
+
+function refreshOverview() {
+  const status = state.status || {};
+  const repo = status.repo || "代码仓";
+  $("#repo-name").textContent = repo.split(/[\\/]/).filter(Boolean).pop() || repo;
+  $("#repo-path").textContent = repo;
+  $("#version").textContent = status.version ? `v${status.version}` : "";
+  $("#analysis-mode").textContent = `分析模式：${status.analysis_mode || "尚未运行"}`;
+  $("#model-name").textContent = `模型：${status.model || "—"}`;
+
+  const modules = state.tree?.modules || [];
+  $("#metric-modules").textContent = modules.length;
+  $("#metric-leaves").textContent = modules.filter((item) => item.is_leaf).length;
+  $("#metric-relations").textContent = state.relations.length;
+  $("#metric-documents").textContent = state.documents.length;
+  $("#tree-badge").textContent = `${modules.length} 个节点`;
+  $("#status-dot").classList.add("ready");
+  $("#server-status").textContent = "本地服务已连接";
+  renderTree();
+  renderPreview();
+}
+
+function moduleDocumentPath(node) {
+  return node.source_path ? `Modules/${node.source_path}/index.md` : "";
+}
+
+function renderTree() {
+  const nodes = state.tree?.tree?.nodes || {};
+  const roots = state.tree?.tree?.roots || [];
+  const modules = Object.fromEntries((state.tree?.modules || []).map((item) => [item.module_id, item]));
+  if (!roots.length) {
+    $("#module-tree").innerHTML = '<div class="empty">尚未发现分析产物。</div>';
+    return;
+  }
+  const build = (id) => {
+    const node = nodes[id] || modules[id] || {};
+    const children = node.child_ids || [];
+    const type = node.is_leaf ? "叶子" : node.is_channel_root ? "信道" : "汇总";
+    return `<div class="tree-node"><div class="tree-row"><button class="tree-toggle">${children.length ? "▾" : "·"}</button><span class="tree-label" data-doc="${escapeHtml(moduleDocumentPath(node))}">${escapeHtml(node.display_name || id)}</span><span class="tree-type">${type}</span></div>${children.map(build).join("")}</div>`;
+  };
+  $("#module-tree").innerHTML = roots.map(build).join("");
+  $$('[data-doc]').forEach((node) => node.addEventListener("click", () => openDocument(node.dataset.doc)));
+}
+
+function documentLink(document) {
+  return `<div class="doc-link" data-document="${escapeHtml(document.path)}"><div><strong>${escapeHtml(document.title)}</strong><small>${escapeHtml(prettyPath(document.path))}</small></div><span class="muted">›</span></div>`;
+}
+
+function renderPreview() {
+  const documents = state.documents.slice(0, 8);
+  $("#document-preview").innerHTML = documents.length
+    ? documents.map(documentLink).join("")
+    : '<div class="empty">生成 Wiki 后，文档会显示在这里。</div>';
+  $$('[data-document]').forEach((node) => node.addEventListener("click", () => openDocument(node.dataset.document)));
+}
+
+function renderDocuments() {
+  const query = ($("#document-filter")?.value || "").toLowerCase();
+  const documents = state.documents.filter((item) => `${item.title} ${item.path}`.toLowerCase().includes(query));
+  $("#document-list").innerHTML = documents.length
+    ? documents.map(documentLink).join("")
+    : '<div class="empty">没有匹配的文档。</div>';
+  $$('[data-document]').forEach((node) => node.addEventListener("click", () => openDocument(node.dataset.document)));
+  if (state.selectedDocument) {
+    $$('[data-document]').forEach((node) => node.classList.toggle("selected", node.dataset.document === state.selectedDocument));
+  }
+}
+
+async function openDocument(path) {
+  if (!path) return;
+  try {
+    const document = await api(`/api/document?path=${encodeURIComponent(path)}`);
+    state.selectedDocument = document.path;
+    $("#document-content").innerHTML = renderMarkdown(document.content);
+    setView("documents");
+    renderDocuments();
+  } catch (error) {
+    showToast(`读取文档失败：${error.message}`);
+  }
+}
+
+function inlineMarkdown(value) {
+  return value.replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+}
+
+function renderMarkdown(source) {
+  const lines = escapeHtml(source).split("\n");
+  let html = "";
+  let inCode = false;
+  let code = [];
+  for (const line of lines) {
+    if (line.startsWith("```")) {
+      if (inCode) {
+        html += `<pre><code>${code.join("\n")}</code></pre>`;
+        code = [];
+        inCode = false;
+      } else {
+        inCode = true;
+      }
+      continue;
+    }
+    if (inCode) {
+      code.push(line);
+    } else if (line.startsWith("# ")) {
+      html += `<h1>${inlineMarkdown(line.slice(2))}</h1>`;
+    } else if (line.startsWith("## ")) {
+      html += `<h2>${inlineMarkdown(line.slice(3))}</h2>`;
+    } else if (line.startsWith("### ")) {
+      html += `<h3>${inlineMarkdown(line.slice(4))}</h3>`;
+    } else if (/^[-*] /.test(line)) {
+      html += `<li>${inlineMarkdown(line.slice(2))}</li>`;
+    } else if (line.startsWith("> ")) {
+      html += `<blockquote>${inlineMarkdown(line.slice(2))}</blockquote>`;
+    } else if (line.trim()) {
+      html += `<p>${inlineMarkdown(line)}</p>`;
+    }
+  }
+  if (inCode) html += `<pre><code>${code.join("\n")}</code></pre>`;
+  return html || '<div class="empty">文档内容为空。</div>';
+}
+
+function renderGraph() {
+  const svg = $("#relation-graph");
+  const empty = $("#relation-empty");
+  const edges = state.relations.filter((item) => item.source && item.target).slice(0, 80);
+  if (!edges.length) {
+    svg.innerHTML = "";
+    empty.style.display = "block";
+    return;
+  }
+  empty.style.display = "none";
+  const names = [...new Set(edges.flatMap((item) => [item.source, item.target]))].slice(0, 28);
+  const points = names.map((name, index) => ({ name, x: 80 + (index % 4) * 225, y: 60 + Math.floor(index / 4) * 77 }));
+  const byName = Object.fromEntries(points.map((point) => [point.name, point]));
+  const defs = '<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#59637a"/></marker></defs>';
+  const lines = edges.filter((edge) => byName[edge.source] && byName[edge.target]).map((edge) => {
+    const start = byName[edge.source];
+    const end = byName[edge.target];
+    const possible = edge.certainty === "lexical" || edge.kind === "POSSIBLE_CALL";
+    return `<line class="graph-edge ${possible ? "possible" : ""}" x1="${start.x + 95}" y1="${start.y + 18}" x2="${end.x}" y2="${end.y + 18}" marker-end="url(#arrow)"/>`;
+  }).join("");
+  const nodes = points.map((point) => `<g class="graph-node"><rect x="${point.x}" y="${point.y}" width="190" height="38" rx="7"/><text x="${point.x + 10}" y="${point.y + 24}">${escapeHtml(point.name).slice(0, 25)}</text></g>`).join("");
+  svg.innerHTML = defs + lines + nodes;
+}
+
+function renderJobs() {
+  const jobs = state.jobs || [];
+  $("#job-list").innerHTML = jobs.length
+    ? jobs.slice().reverse().map((job) => `<div class="job-row"><div><div class="job-status ${escapeHtml(job.status)}">${escapeHtml(job.status)}</div><small class="muted mono">${escapeHtml(job.job_id)}</small></div><div><div class="job-progress"><i style="width:${job.progress || 0}%"></i></div><small class="muted">${escapeHtml(job.message || "—")}</small></div><div class="muted">${job.progress || 0}%</div></div>`).join("")
+    : '<div class="empty">还没有生成任务。</div>';
+}
+
+function updateProgress(job) {
+  if (!job) return;
+  const progress = job.progress || 0;
+  $("#progress-value").textContent = job.status === "completed" ? "✓" : `${progress}%`;
+  $("#progress-message").textContent = job.message || job.status;
+  $("#progress-ring").style.background = `conic-gradient(var(--accent) ${progress * 3.6}deg, var(--surface-3) 0deg)`;
+  state.activeJob = job;
+}
+
+async function loadAll() {
+  try {
+    const [status, tree, relations, documents, jobs] = await Promise.all([
+      api("/api/status"), api("/api/tree"), api("/api/relations"), api("/api/documents"), api("/api/jobs"),
+    ]);
+    state.status = status;
+    state.tree = tree;
+    state.relations = relations.relations || [];
+    state.documents = documents.documents || [];
+    state.jobs = jobs.jobs || [];
+    refreshOverview();
+    renderDocuments();
+    renderGraph();
+    renderJobs();
+    const active = state.jobs.find((job) => job.status === "running" || job.status === "queued");
+    if (active) subscribe(active.job_id);
+    else if (state.jobs.length) updateProgress(state.jobs[state.jobs.length - 1]);
+  } catch (error) {
+    $("#server-status").textContent = "服务不可用";
+    showToast(`无法连接本地服务：${error.message}`);
+  }
+}
+
+function subscribe(jobId) {
+  const source = new EventSource(`/api/jobs/${jobId}/events`);
+  source.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    if (data.type === "complete") {
+      source.close();
+      state.jobs = state.jobs.filter((job) => job.job_id !== jobId).concat(data);
+      updateProgress(data);
+      loadAll();
+    } else {
+      updateProgress({ ...state.activeJob, ...data, status: "running" });
+      renderJobs();
+    }
+  };
+  source.onerror = () => source.close();
+}
+
+async function startGeneration() {
+  try {
+    const job = await api("/api/generate", { method: "POST", body: JSON.stringify({}) });
+    state.jobs = (state.jobs || []).concat(job);
+    updateProgress(job);
+    setView("jobs");
+    renderJobs();
+    subscribe(job.job_id);
+    showToast("生成任务已启动");
+  } catch (error) {
+    showToast(`启动失败：${error.message}`);
+  }
+}
+
+$$('.nav-tab,[data-view]').forEach((node) => node.addEventListener("click", () => setView(node.dataset.view)));
+$("#refresh-btn").addEventListener("click", loadAll);
+$("#generate-btn").addEventListener("click", startGeneration);
+$("#generate-btn-secondary").addEventListener("click", startGeneration);
+$("#document-filter").addEventListener("input", renderDocuments);
+loadAll();
