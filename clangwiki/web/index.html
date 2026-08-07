@@ -6,35 +6,36 @@
   <title>ClangWiki 本地工作台</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
-<body class="dark">
+<body>
   <div class="app-shell">
-    <header class="app-nav">
-      <div class="nav-inner">
-        <div class="brand">
-          <span class="brand-mark" aria-hidden="true">C</span>
-          <span class="brand-copy"><strong>ClangWiki</strong><small>COMPILER KNOWLEDGE</small></span>
-          <span class="version" id="version"></span>
-        </div>
+    <aside class="workspace-sidebar">
+      <div class="sidebar-brand">
+        <span class="brand-mark" aria-hidden="true">C</span>
+        <span class="brand-copy"><strong>ClangWiki</strong><small>COMPILER KNOWLEDGE</small></span>
+        <span class="version" id="version"></span>
+      </div>
 
-        <nav class="nav-tabs" aria-label="主导航">
-          <button class="nav-tab active" data-view="overview">总览</button>
-          <button class="nav-tab" data-view="documents">文档</button>
-          <button class="nav-tab" data-view="relations">关系图</button>
-          <button class="nav-tab" data-view="jobs">生成任务</button>
-        </nav>
+      <nav class="sidebar-nav" aria-label="主导航">
+        <button class="nav-tab active" data-view="overview"><span>▦</span>总览</button>
+        <button class="nav-tab" data-view="documents"><span>▤</span>文档</button>
+        <button class="nav-tab" data-view="relations"><span>⌘</span>关系图</button>
+        <button class="nav-tab" data-view="jobs"><span>◷</span>生成任务</button>
+      </nav>
 
-        <div class="nav-spacer"></div>
+      <section class="sidebar-tree-section">
+        <div class="sidebar-section-heading"><span>代码仓层级</span><span class="badge" id="tree-badge">—</span></div>
+        <div id="module-tree" class="module-tree"><div class="empty">尚未发现分析产物。</div></div>
+      </section>
+
+      <div class="sidebar-footer">
         <div class="repo-context" title="当前代码仓">
           <span class="repo-context-label">代码仓</span>
           <span id="repo-name" class="repo-name">正在加载…</span>
           <span id="repo-path" class="repo-path mono"></span>
         </div>
-        <div class="nav-actions">
-          <span class="connection"><i class="status-dot" id="status-dot"></i><span id="server-status">正在连接</span></span>
-          <button class="icon-button" id="theme-toggle" type="button" aria-label="切换颜色模式" title="切换颜色模式">☀</button>
-        </div>
+        <div class="sidebar-status"><span class="connection"><i class="status-dot" id="status-dot"></i><span id="server-status">正在连接</span></span></div>
       </div>
-    </header>
+    </aside>
 
     <main class="main-content">
       <header class="topbar"><div><div class="eyebrow">本地开发工作台</div><h1 id="page-title">代码仓总览</h1></div><div class="top-actions"><button class="secondary" id="refresh-btn">刷新</button><button class="primary" id="generate-btn">生成 Wiki</button></div></header>
@@ -42,7 +43,7 @@
       <section id="overview-view" class="view active">
         <div class="hero-grid"><div class="hero-card"><div class="eyebrow">编译器辅助文档</div><h2>从信道叶子模块开始，逐层理解整个代码仓。</h2><p>ClangWiki 组合 CMake、Clang 静态事实和已认证的 <span class="mono">opencode run</span> 工作流。本地工作台不保存 API Key。</p><div class="hero-meta"><span id="analysis-mode">分析模式：—</span><span id="model-name">模型：—</span></div></div><div class="progress-card"><div class="card-title">最近一次生成</div><div class="progress-ring" id="progress-ring"><span id="progress-value">—</span></div><div id="progress-message" class="muted">当前没有运行中的任务</div><button class="text-button" data-view="jobs">查看任务记录 →</button></div></div>
         <div class="metric-grid"><div class="metric"><span>模块节点</span><strong id="metric-modules">—</strong><small>层级结构节点</small></div><div class="metric"><span>叶子文档</span><strong id="metric-leaves">—</strong><small>最小证据单元</small></div><div class="metric"><span>关系数量</span><strong id="metric-relations">—</strong><small>Clang 分析事实</small></div><div class="metric"><span>Markdown 文档</span><strong id="metric-documents">—</strong><small>已生成产物</small></div></div>
-        <div class="two-col"><section class="panel"><div class="panel-heading"><div><div class="eyebrow">模块层级</div><h3>代码仓结构</h3></div><span class="badge" id="tree-badge">—</span></div><div id="module-tree" class="module-tree"><div class="empty">尚未发现分析产物。</div></div></section><section class="panel"><div class="panel-heading"><div><div class="eyebrow">文档导航</div><h3>生成的 Wiki</h3></div><button class="text-button" data-view="documents">查看全部 →</button></div><div id="document-preview" class="document-preview"><div class="empty">生成 Wiki 后，文档会显示在这里。</div></div></section></div>
+        <div class="two-col"><section class="panel"><div class="panel-heading"><div><div class="eyebrow">文档生成策略</div><h3>由叶到根逐级汇聚</h3></div></div><div class="strategy-list"><div><strong>01</strong><span>先以信道级子模块生成最小单元文档。</span></div><div><strong>02</strong><span>再依据模块树自底向上汇聚，减少上下文遗漏。</span></div><div><strong>03</strong><span>最终形成可追溯的系统、信道与组件级 Wiki。</span></div></div></section><section class="panel"><div class="panel-heading"><div><div class="eyebrow">文档导航</div><h3>生成的 Wiki</h3></div><button class="text-button" data-view="documents">查看全部 →</button></div><div id="document-preview" class="document-preview"><div class="empty">生成 Wiki 后，文档会显示在这里。</div></div></section></div>
       </section>
 
       <section id="documents-view" class="view"><div class="section-heading"><div><div class="eyebrow">文档浏览</div><h2>有证据支撑的 Markdown</h2><p>先生成叶子文档，再按照模块层级自底向上汇总。</p></div><input id="document-filter" class="search" placeholder="筛选文档…"></div><div class="document-layout"><div id="document-list" class="document-list"></div><article id="document-content" class="markdown-view"><div class="empty">请先选择一篇文档。</div></article></div></section>

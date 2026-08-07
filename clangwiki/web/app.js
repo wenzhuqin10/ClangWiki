@@ -6,6 +6,7 @@ const state = {
   jobs: [],
   selectedDocument: null,
   activeJob: null,
+  expandedModules: new Set(),
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -32,20 +33,6 @@ function showToast(message) {
   node.textContent = message;
   node.classList.add("show");
   window.setTimeout(() => node.classList.remove("show"), 3200);
-}
-
-function syncThemeToggle() {
-  const button = $("#theme-toggle");
-  if (!button) return;
-  const isDark = document.body.classList.contains("dark");
-  button.textContent = isDark ? "☀" : "☾";
-  button.title = isDark ? "切换到浅色模式" : "切换到深色模式";
-  button.setAttribute("aria-label", button.title);
-}
-
-function toggleTheme() {
-  document.body.classList.toggle("dark");
-  syncThemeToggle();
 }
 
 function setView(view) {
@@ -95,13 +82,21 @@ function renderTree() {
     $("#module-tree").innerHTML = '<div class="empty">尚未发现分析产物。</div>';
     return;
   }
-  const build = (id) => {
+  const build = (id, depth = 0) => {
     const node = nodes[id] || modules[id] || {};
     const children = node.child_ids || [];
     const type = node.is_leaf ? "叶子" : node.is_channel_root ? "信道" : "汇总";
-    return `<div class="tree-node"><div class="tree-row"><button class="tree-toggle">${children.length ? "▾" : "·"}</button><span class="tree-label" data-doc="${escapeHtml(moduleDocumentPath(node))}">${escapeHtml(node.display_name || id)}</span><span class="tree-type">${type}</span></div>${children.map(build).join("")}</div>`;
+    const expanded = !children.length || state.expandedModules.has(id) || depth === 0;
+    const childHtml = expanded ? children.map((childId) => build(childId, depth + 1)).join("") : "";
+    return `<div class="tree-node"><div class="tree-row"><button class="tree-toggle" data-toggle-module="${escapeHtml(id)}" aria-label="${expanded ? "收起" : "展开"} ${escapeHtml(node.display_name || id)}">${children.length ? (expanded ? "▾" : "▸") : "·"}</button><span class="tree-label" data-doc="${escapeHtml(moduleDocumentPath(node))}">${escapeHtml(node.display_name || id)}</span><span class="tree-type">${type}</span></div>${childHtml}</div>`;
   };
   $("#module-tree").innerHTML = roots.map(build).join("");
+  $$('[data-toggle-module]').forEach((node) => node.addEventListener("click", () => {
+    const moduleId = node.dataset.toggleModule;
+    if (state.expandedModules.has(moduleId)) state.expandedModules.delete(moduleId);
+    else state.expandedModules.add(moduleId);
+    renderTree();
+  }));
   $$('[data-doc]').forEach((node) => node.addEventListener("click", () => openDocument(node.dataset.doc)));
 }
 
@@ -281,6 +276,4 @@ $("#refresh-btn").addEventListener("click", loadAll);
 $("#generate-btn").addEventListener("click", startGeneration);
 $("#generate-btn-secondary").addEventListener("click", startGeneration);
 $("#document-filter").addEventListener("input", renderDocuments);
-$("#theme-toggle").addEventListener("click", toggleTheme);
-syncThemeToggle();
 loadAll();
