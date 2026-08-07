@@ -34,6 +34,20 @@ function showToast(message) {
   window.setTimeout(() => node.classList.remove("show"), 3200);
 }
 
+function syncThemeToggle() {
+  const button = $("#theme-toggle");
+  if (!button) return;
+  const isDark = document.body.classList.contains("dark");
+  button.textContent = isDark ? "☀" : "☾";
+  button.title = isDark ? "切换到浅色模式" : "切换到深色模式";
+  button.setAttribute("aria-label", button.title);
+}
+
+function toggleTheme() {
+  document.body.classList.toggle("dark");
+  syncThemeToggle();
+}
+
 function setView(view) {
   $$(".view").forEach((node) => node.classList.toggle("active", node.id === `${view}-view`));
   $$(".nav-tab").forEach((node) => node.classList.toggle("active", node.dataset.view === view));
@@ -52,6 +66,7 @@ function refreshOverview() {
   const repo = status.repo || "代码仓";
   $("#repo-name").textContent = repo.split(/[\\/]/).filter(Boolean).pop() || repo;
   $("#repo-path").textContent = repo;
+  $("#repo-path").title = repo;
   $("#version").textContent = status.version ? `v${status.version}` : "";
   $("#analysis-mode").textContent = `分析模式：${status.analysis_mode || "尚未运行"}`;
   $("#model-name").textContent = `模型：${status.model || "—"}`;
@@ -266,4 +281,6 @@ $("#refresh-btn").addEventListener("click", loadAll);
 $("#generate-btn").addEventListener("click", startGeneration);
 $("#generate-btn-secondary").addEventListener("click", startGeneration);
 $("#document-filter").addEventListener("input", renderDocuments);
+$("#theme-toggle").addEventListener("click", toggleTheme);
+syncThemeToggle();
 loadAll();

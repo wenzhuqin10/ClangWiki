@@ -6,19 +6,35 @@
   <title>ClangWiki 本地工作台</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
-<body>
+<body class="dark">
   <div class="app-shell">
-    <aside class="sidebar">
-      <div class="brand"><span class="brand-mark">C</span><div><strong>ClangWiki</strong><small>编译器辅助知识工作台</small></div></div>
-      <div class="repo-card"><div class="eyebrow">当前代码仓</div><div id="repo-name" class="repo-name">正在加载…</div><div id="repo-path" class="muted mono"></div></div>
-      <nav class="nav-tabs" aria-label="主导航">
-        <button class="nav-tab active" data-view="overview">总览</button>
-        <button class="nav-tab" data-view="documents">文档</button>
-        <button class="nav-tab" data-view="relations">关系图</button>
-        <button class="nav-tab" data-view="jobs">生成任务</button>
-      </nav>
-      <div class="sidebar-footer"><span class="status-dot" id="status-dot"></span><span id="server-status">正在连接</span><span class="version" id="version"></span></div>
-    </aside>
+    <header class="app-nav">
+      <div class="nav-inner">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">C</span>
+          <span class="brand-copy"><strong>ClangWiki</strong><small>COMPILER KNOWLEDGE</small></span>
+          <span class="version" id="version"></span>
+        </div>
+
+        <nav class="nav-tabs" aria-label="主导航">
+          <button class="nav-tab active" data-view="overview">总览</button>
+          <button class="nav-tab" data-view="documents">文档</button>
+          <button class="nav-tab" data-view="relations">关系图</button>
+          <button class="nav-tab" data-view="jobs">生成任务</button>
+        </nav>
+
+        <div class="nav-spacer"></div>
+        <div class="repo-context" title="当前代码仓">
+          <span class="repo-context-label">代码仓</span>
+          <span id="repo-name" class="repo-name">正在加载…</span>
+          <span id="repo-path" class="repo-path mono"></span>
+        </div>
+        <div class="nav-actions">
+          <span class="connection"><i class="status-dot" id="status-dot"></i><span id="server-status">正在连接</span></span>
+          <button class="icon-button" id="theme-toggle" type="button" aria-label="切换颜色模式" title="切换颜色模式">☀</button>
+        </div>
+      </div>
+    </header>
 
     <main class="main-content">
       <header class="topbar"><div><div class="eyebrow">本地开发工作台</div><h1 id="page-title">代码仓总览</h1></div><div class="top-actions"><button class="secondary" id="refresh-btn">刷新</button><button class="primary" id="generate-btn">生成 Wiki</button></div></header>
