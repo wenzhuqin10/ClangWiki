@@ -1,7 +1,7 @@
 # ClangWiki
 
 ClangWiki 是面向 C/C++ 代码仓的本地命令行文档生成框架。它先通过 CMake 和
-Clang/LibTooling 提取确定性的代码事实，再按文档任务构造受限上下文，通过独立的
+Clang/libclang 提取确定性的代码事实，再按文档任务构造受限上下文，通过独立的
 `opencode run` 调用已认证的 OpenCode/GLM-5.1，最终输出中文 Markdown Wiki。
 
 ```text

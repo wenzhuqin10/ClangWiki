@@ -6,6 +6,7 @@ __pycache__/
 workspace/
 simulation/workspace/
 build/
+bin/
 *.egg-info/
 *.db
 .env

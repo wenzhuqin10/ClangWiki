@@ -49,7 +49,7 @@ workspace/
 }
 ```
 
-`certainty` 为 `compiler` 时来自 LibTooling；`lexical` 表示 Python 的保守辅助扫描。
+`certainty` 为 `compiler` 时来自 libclang AST；`lexical` 表示 Python 的保守辅助扫描。
 
 ## 关系记录
 

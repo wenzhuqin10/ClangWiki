@@ -8,7 +8,7 @@
 |---|---|---:|
 | Python 3.10+ | 运行 ClangWiki CLI | 是 |
 | CMake | 生成 `compile_commands.json` | 是 |
-| LLVM/Clang 开发包 | 构建 `clangwiki-analyzer` | 是，正式 `full` 分析 |
+| LLVM/Clang（含 `libclang`） | 构建 `clangwiki-analyzer` | 是，正式 `full` 分析 |
 | OpenCode 或兼容企业启动器 | 通过 `opencode run` 调用模型 | 是 |
 | 已认证的 GLM-5.1 Provider | OpenCode 的模型访问权 | 是 |
 
@@ -36,11 +36,11 @@ python -m pip install -e .
 
 ## 3. 构建 Clang 分析器
 
-Windows 需要已安装 LLVM 的开发组件及 CMake。若 `find_package(Clang)` 不能定位 LLVM，按本机
-LLVM 安装路径设置 `CMAKE_PREFIX_PATH` 后重试。
+Windows 需要安装 LLVM、CMake 和 Visual Studio 2022 C++ Build Tools。分析器使用稳定的
+`libclang` C API，不要求 `LLVMConfig.cmake`、`ClangConfig.cmake` 或 LibTooling 静态库。
 
 ```powershell
-.\scripts\build-analyzer.ps1
+.\scripts\build-analyzer.ps1 -LLVMRoot "C:\Program Files\LLVM"
 ```
 
 Linux/WSL2：

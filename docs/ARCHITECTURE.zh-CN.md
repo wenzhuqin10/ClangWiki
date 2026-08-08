@@ -27,7 +27,7 @@ Build Environment Manager                [ClangWiki + CMake]
 └── validates compile_commands.json
         │
         ▼
-Compiler Analysis                        [Clang/LibTooling + ClangWiki]
+Compiler Analysis                        [Clang/libclang + ClangWiki]
 ├── compiler facts: functions, records, enums, globals
 ├── compiler facts: direct CALLS and REFERENCES
 ├── lexical supplements: INCLUDES, macros, unresolved calls
@@ -82,7 +82,7 @@ README.md
 | 模式 | 含义 | 文档中的使用方式 |
 |---|---|---|
 | `full` | 已构建并执行 `clangwiki-analyzer`，读取编译数据库。 | `certainty=compiler` 可作为确定结构事实。 |
-| `partial` | LibTooling 工具不可用或失败，使用词法辅助分析。 | 不应把调用/类型关系当作编译器级结论。 |
+| `partial` | libclang 分析器不可用或失败，使用词法辅助分析。 | 不应把调用/类型关系当作编译器级结论。 |
 
 第一版故意不把词法结果伪装为编译器事实。宏展开、函数指针、回调、动态加载、条件编译的实际路径和跨线程数据流均不在确定性分析范围内。
 

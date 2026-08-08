@@ -54,7 +54,7 @@ def _closing_brace(text: str, opening: int) -> int:
 
 
 class ClangAnalyzer:
-    """Runs the bundled LibTooling executable and enriches its facts conservatively."""
+    """Runs the bundled libclang analyzer and enriches its facts conservatively."""
 
     def __init__(self, executable: str | Path | None = None) -> None:
         self.executable = Path(executable).expanduser() if executable else None
@@ -65,10 +65,10 @@ class ClangAnalyzer:
         bundle = AnalysisBundle(mode="partial")
         if compiler is not None:
             try:
-                self._run_libtooling(compiler, repo, compilation_database, bundle)
+                self._run_compiler_analyzer(compiler, repo, compilation_database, bundle)
                 bundle.mode = "full"
             except (OSError, subprocess.SubprocessError, json.JSONDecodeError, AnalysisError) as exc:
-                bundle.diagnostics.append(f"LibTooling analyzer failed; lexical augmentation used: {exc}")
+                bundle.diagnostics.append(f"libclang analyzer failed; lexical augmentation used: {exc}")
         else:
             bundle.diagnostics.append(
                 "cpp-analyzer 未找到；使用词法辅助分析。该模式不提供编译器级语义保证。"
@@ -84,7 +84,7 @@ class ClangAnalyzer:
         found = shutil.which("clangwiki-analyzer") or shutil.which("cpp-analyzer")
         return Path(found) if found else None
 
-    def _run_libtooling(self, executable: Path, repo: Path, compdb: Path, bundle: AnalysisBundle) -> None:
+    def _run_compiler_analyzer(self, executable: Path, repo: Path, compdb: Path, bundle: AnalysisBundle) -> None:
         entries = json.loads(compdb.read_text(encoding="utf-8"))
         units = []
         for item in entries:
