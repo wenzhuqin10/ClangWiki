@@ -4,14 +4,23 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "clangwiki"
-version = "0.4.0"
+version = "0.5.0"
 description = "Compiler-assisted C/C++ repository documentation through OpenCode CLI"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "fastapi>=0.115,<1",
+    "pydantic>=2.8,<3",
+    "uvicorn>=0.30,<1",
+]
 
 [project.optional-dependencies]
-test = ["pytest>=8.0"]
+rag = [
+    "fastembed>=0.7,<0.9",
+    "numpy>=2.0,<3",
+    "usearch>=2.20,<3; python_version < '3.13'",
+]
+test = ["pytest>=8.0", "httpx>=0.27,<1"]
 
 [project.scripts]
 clangwiki = "clangwiki.cli:main"
@@ -20,7 +29,7 @@ clangwiki = "clangwiki.cli:main"
 include = ["clangwiki*"]
 
 [tool.setuptools.package-data]
-clangwiki = ["web/*"]
+clangwiki = ["web/*", "web/assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

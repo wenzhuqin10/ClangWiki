@@ -21,6 +21,7 @@ class RunConfig:
     skip_cmake: bool = False
     skip_analysis: bool = False
     only: tuple[str, ...] = ()
+    module_ids: tuple[str, ...] = ()
     leaf_module_paths: tuple[str, ...] = ()
     channel_module_paths: tuple[str, ...] = ()
 

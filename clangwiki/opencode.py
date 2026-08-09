@@ -18,19 +18,29 @@ class OpenCodeRunner:
         self.agent = agent
         self.timeout_seconds = timeout_seconds
 
-    def command(self, context_file: Path) -> list[str]:
+    def command(self, context_file: Path, prompt: str | None = None) -> list[str]:
         executable = shutil.which(self.executable) or self.executable
         command = [executable, "run", "--model", self.model, "--file", str(context_file)]
         if self.agent:
             command.extend(["--agent", self.agent])
-        command.append(
+        command.append(prompt or (
             "依据附件中的 ClangWiki 任务上下文生成文档。严格遵守其中的章节契约和证据分级，"
             "不得改名、遗漏、合并或增加二级章节；证据不足时保留章节并明确说明。"
             "仅输出最终 Markdown 正文。"
-        )
+        ))
         return command
 
     def generate(self, repository: Path, context_file: Path, stdout_log: Path, stderr_log: Path) -> str:
+        return self.run_prompt(repository, context_file, stdout_log, stderr_log, None)
+
+    def run_prompt(
+        self,
+        repository: Path,
+        context_file: Path,
+        stdout_log: Path,
+        stderr_log: Path,
+        prompt: str | None,
+    ) -> str:
         if shutil.which(self.executable) is None and not Path(self.executable).is_file():
             raise OpenCodeError(
                 f"未找到 OpenCode 可执行文件 '{self.executable}'。请安装 OpenCode，或使用 --opencode-executable 指向企业兼容启动器。"
@@ -39,7 +49,7 @@ class OpenCodeRunner:
         if os.name == "nt":
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         try:
-            result = subprocess.run(self.command(context_file), cwd=repository, capture_output=True,
+            result = subprocess.run(self.command(context_file, prompt), cwd=repository, capture_output=True,
                 text=True, encoding="utf-8", errors="replace", timeout=self.timeout_seconds,
                 creationflags=flags, check=False)
         except subprocess.TimeoutExpired as exc:

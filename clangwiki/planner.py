@@ -8,8 +8,13 @@ def module_document_path(module: Module) -> str:
     return f"Modules/{path}/index.md"
 
 
-def plan_documents(modules: dict[str, Module], only: tuple[str, ...] = ()) -> list[DocumentTask]:
+def plan_documents(
+    modules: dict[str, Module],
+    only: tuple[str, ...] = (),
+    module_ids: tuple[str, ...] = (),
+) -> list[DocumentTask]:
     requested = set(only)
+    selected_modules = set(module_ids)
 
     def include(kind: str) -> bool:
         return not requested or kind in requested
@@ -25,6 +30,8 @@ def plan_documents(modules: dict[str, Module], only: tuple[str, ...] = ()) -> li
             key=lambda module: (-module.depth, 0 if module.is_leaf else 1, module.source_path),
         )
         for module in ordered_modules:
+            if selected_modules and module.module_id not in selected_modules:
+                continue
             document_type = "leaf-module" if module.is_leaf else "module-summary"
             hierarchy_role = "leaf" if module.is_leaf else "aggregate"
             tasks.append(

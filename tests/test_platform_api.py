@@ -1,0 +1,102 @@
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from clangwiki.api import create_app
+from clangwiki.graph import GraphService
+
+
+def _repository(path: Path, name: str = "demo") -> Path:
+    root = path / name
+    (root / "src").mkdir(parents=True)
+    (root / "CMakeLists.txt").write_text("cmake_minimum_required(VERSION 3.20)\nproject(demo C)\n", encoding="utf-8")
+    (root / "src" / "demo.c").write_text("int pdsch_encode(void) { return 0; }\n", encoding="utf-8")
+    return root
+
+
+def test_local_platform_registers_repositories_without_secrets(tmp_path: Path) -> None:
+    app = create_app(tmp_path / "data")
+    client = TestClient(app)
+    repository_root = _repository(tmp_path)
+
+    response = client.post("/api/repositories", json={"path": str(repository_root), "name": "PDSCH", "config": {"model": "corp/glm-5.1"}})
+    assert response.status_code == 201
+    repository = response.json()
+    assert repository["name"] == "PDSCH"
+    assert repository["path"] == str(repository_root.resolve())
+
+    blocked = client.post("/api/repositories", json={"path": str(repository_root), "config": {"api_key": "must-not-store"}})
+    assert blocked.status_code == 400
+    assert "凭据" in blocked.json()["detail"]
+
+    static = client.get("/")
+    assert static.status_code == 200
+    assert "root" in static.text
+
+
+def test_manual_knowledge_is_searchable_before_first_generation(tmp_path: Path) -> None:
+    app = create_app(tmp_path / "data")
+    client = TestClient(app)
+    repository_root = _repository(tmp_path)
+    repository = client.post("/api/repositories", json={"path": str(repository_root)}).json()
+
+    page = client.post("/api/wiki/pages", json={
+        "title": "PDSCH 调试笔记", "content": "# PDSCH 调试\n\n检查 `pdsch_encode` 与 HARQ 上下文。",
+        "repository_id": repository["id"], "tags": ["PDSCH", "调试"],
+    })
+    assert page.status_code == 201
+    services = app.state.services
+    indexed = services.indexer.index_repository(repository["id"])
+    assert indexed["chunks"] >= 1
+
+    search = client.post("/api/search", json={
+        "query": "pdsch_encode", "scope_type": "repository", "scope_id": repository["id"],
+    })
+    assert search.status_code == 200
+    assert search.json()["results"]
+    assert search.json()["results"][0]["kind"] == "manual"
+
+
+def test_graph_and_logical_collection_keep_repositories_isolated(tmp_path: Path) -> None:
+    app = create_app(tmp_path / "data")
+    client = TestClient(app)
+    first = client.post("/api/repositories", json={"path": str(_repository(tmp_path, "common"))}).json()
+    second = client.post("/api/repositories", json={"path": str(_repository(tmp_path, "pdsch"))}).json()
+    collection = client.post("/api/collections", json={
+        "name": "基带知识空间", "repository_ids": [first["id"], second["id"]],
+    }).json()
+    assert len(collection["repositories"]) == 2
+
+    services = app.state.services
+    run_id = "run-test"
+    run_root = services.registry.run_root(first["id"], run_id)
+    knowledge = run_root / "knowledge"
+    knowledge.mkdir(parents=True)
+    (knowledge / "modules.json").write_text(json.dumps([
+        {"module_id": "pdsch", "display_name": "PDSCH", "source_path": "src", "parent_id": None, "direct_files": ["src/demo.c"]}
+    ]), encoding="utf-8")
+    (knowledge / "symbols.json").write_text(json.dumps([
+        {"name": "pdsch_encode", "qualified_name": "pdsch_encode", "file_path": "src/demo.c", "line_start": 1, "line_end": 1, "kind": "function", "signature": "int pdsch_encode(void)", "certainty": "compiler"}
+    ]), encoding="utf-8")
+    (knowledge / "relations.json").write_text(json.dumps([
+        {"source": "pdsch_encode", "target": "ldpc_encode", "kind": "CALLS", "file_path": "src/demo.c", "line": 1, "certainty": "compiler", "confidence": 1.0}
+    ]), encoding="utf-8")
+    services.database.execute(
+        "INSERT INTO runs(id,repository_id,status,config_hash,schema_version,artifact_path,manifest_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
+        (run_id, first["id"], "completed", "test", "test", str(run_root), "{}", time.time()),
+    )
+    services.database.execute("UPDATE repositories SET active_run_id=?,status='ready' WHERE id=?", (run_id, first["id"]))
+    result = GraphService(services.database, services.registry).ingest_repository(first["id"], run_id, run_root)
+    assert result["nodes"] >= 4
+
+    graph = client.get(f"/api/graph?scope_type=repository&scope_id={first['id']}&level=symbol")
+    assert graph.status_code == 200
+    assert any(node["name"] == "pdsch_encode" for node in graph.json()["nodes"])
+    collection_graph = client.post(f"/api/collections/{collection['id']}/relations/rebuild")
+    assert collection_graph.status_code == 200
+    # The collection only stores logical links; it never gains a source-tree copy.
+    assert not (services.registry.collection_root(collection["id"]) / "source").exists()

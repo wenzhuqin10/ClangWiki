@@ -62,7 +62,7 @@ class GenerationPipeline:
             cfg.leaf_module_paths,
             cfg.channel_module_paths,
         )
-        tasks = plan_documents(modules, cfg.only)
+        tasks = plan_documents(modules, cfg.only, cfg.module_ids)
         write_json(workspace / "tasks" / "tasks.json", [task.__dict__ for task in tasks])
         self._log(log, f"[PLAN] {len(tasks)} document tasks")
         self._emit("plan", f"Planned {len(tasks)} documents", 38)

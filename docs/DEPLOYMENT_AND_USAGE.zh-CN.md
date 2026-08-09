@@ -1,138 +1,211 @@
-# 部署与使用说明
+# ClangWiki Windows 离线部署与使用说明
 
-本说明面向另一台生产设备。此工程不要求在当前开发机运行；请在目标设备按以下步骤部署。
+本文面向**另一台 Windows 生产设备**。部署完成后，生产设备可以在无 Node.js、无 Docker、无 Ollama、无外部向量服务的情况下运行 ClangWiki；模型仍通过该设备已经认证的 `opencode run` 调用。
 
-## 1. 前置条件
+## 1. 部署边界
 
-| 组件 | 用途 | 必需 |
-|---|---|---:|
-| Python 3.10+ | 运行 ClangWiki CLI | 是 |
-| CMake | 生成 `compile_commands.json` | 是 |
-| LLVM/Clang（含 `libclang`） | 构建 `clangwiki-analyzer` | 是，正式 `full` 分析 |
-| OpenCode 或兼容企业启动器 | 通过 `opencode run` 调用模型 | 是 |
-| 已认证的 GLM-5.1 Provider | OpenCode 的模型访问权 | 是 |
+| 项目 | 生产机要求 | 说明 |
+|---|---:|---|
+| Python 3.12 x64 | 必须 | 推荐固定到 3.12；3.13 仅做兼容性验证。 |
+| CMake | 必须 | 为目标仓生成 `compile_commands.json`。 |
+| LLVM/Clang x64 | 必须 | 运行 `clangwiki-analyzer.exe` 与 `libclang.dll`。 |
+| OpenCode/企业兼容启动器 | 必须 | 已通过企业流程认证的 CLI。 |
+| GLM-5.1 Provider | 必须 | 仅需在 OpenCode 中可用。 |
+| FastEmbed + USearch | 可选 | 本地 CPU 向量检索；缺失时自动降级。 |
+| Node.js | 不需要 | React 已在交付前构建为静态资源。 |
+| API Key | 不需要且禁止输入 | 凭据由 OpenCode 管理。 |
 
-不需要：API Key 文件、Ollama、Embedding、向量数据库、OpenCode Server、WSL2。WSL2/Linux 只是
-部分 C/C++ 项目的推荐构建环境，Windows 原生 CMake/LLVM 同样可用。
+服务只绑定 `127.0.0.1`；不支持局域网访问、多用户账号或在线编辑源码。
 
-## 2. 安装 ClangWiki
+## 2. 建议目录
 
-```powershell
-git clone https://github.com/wenzhuqin10/ClangWiki.git
-Set-Location ClangWiki
-py -3 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -e .
+```text
+D:\ClangWiki\                    # 程序安装目录
+├── .venv\
+├── clangwiki\
+├── bin\
+│   ├── clangwiki-analyzer.exe
+│   └── libclang.dll
+├── offline\
+│   ├── wheels\                   # 管理员准备的离线 wheel
+│   └── SHA256SUMS.txt
+└── scripts\
+
+D:\clangwiki-data\               # 可备份的数据根目录
+├── clangwiki.db
+├── repositories\
+├── collections\
+├── models\
+└── backups\
 ```
 
-Linux/WSL2：
+目标代码仓可以位于任意已批准目录。ClangWiki 只保存其规范化路径，**不会复制、移动、删除或写入源码**。
 
-```bash
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -e .
-```
+## 3. 首次安装
 
-## 3. 构建 Clang 分析器
-
-Windows 需要安装 LLVM、CMake 和 Visual Studio 2022 C++ Build Tools。分析器使用稳定的
-`libclang` C API，不要求 `LLVMConfig.cmake`、`ClangConfig.cmake` 或 LibTooling 静态库。
+管理员应先安装 Python 3.12 x64、CMake 和 LLVM x64。确认命令可用：
 
 ```powershell
+py -3.12 --version
+cmake --version
+clang --version
+opencode --version
+opencode models
+```
+
+从交付介质复制程序包到 `D:\ClangWiki` 后，在 PowerShell 执行：
+
+```powershell
+Set-Location D:\ClangWiki
+.\scripts\Install-ClangWiki.ps1 `
+  -InstallRoot "D:\ClangWiki" `
+  -WheelRoot "D:\ClangWiki\offline\wheels"
+```
+
+离线交付包中应含有 `fastapi`、`pydantic`、`uvicorn`、`httpx`、ClangWiki 及其依赖 wheel。若要启用本地向量检索，还需包含与 Python 3.12 x64 匹配的 `fastembed`、`numpy`、`usearch` 及 ONNX Runtime wheel。
+
+## 4. Clang 分析器
+
+交付中应直接包含：
+
+```text
+D:\ClangWiki\bin\clangwiki-analyzer.exe
+D:\ClangWiki\bin\libclang.dll
+```
+
+使用本仓库构建时：
+
+```powershell
+Set-Location D:\ClangWiki
 .\scripts\build-analyzer.ps1 -LLVMRoot "C:\Program Files\LLVM"
 ```
 
-Linux/WSL2：
+分析器采用 `libclang` C API；不要求 LibTooling 静态库、`LLVMConfig.cmake` 或 `ClangConfig.cmake`。如果分析器不可用，系统会使用明确标识为 `partial` 的词法辅助分析；图谱和文档会保留该证据等级，不能当作编译器确认事实。
 
-```bash
-sudo apt install cmake clang llvm-dev libclang-dev
-chmod +x scripts/build-analyzer.sh
-./scripts/build-analyzer.sh
-```
+## 5. OpenCode 和 GLM-5.1
 
-然后在生成命令中传入生成的 `bin/clangwiki-analyzer[.exe]`。未提供时程序仍会运行，
-但会在 `analysis/diagnostics.json` 中标记为 `partial`，不具备完整编译器语义保证。
-
-## 4. 配置 OpenCode 与 GLM-5.1
-
-ClangWiki 不配置 API Key。请按照组织规定，在 OpenCode 中完成认证并确认真实模型 ID：
+ClangWiki 不保存任何凭据。请按组织流程先在生产机完成认证，并测试模型标识：
 
 ```powershell
 opencode models
 opencode run --model "provider/glm-5.1" "只回复 GLM_READY"
 ```
 
-`provider/glm-5.1` 只是示例，必须替换为 `opencode models` 显示的准确名称。若组织只能通过
-`nga` 调用 OpenCode 且它兼容标准 CLI 参数，后续命令使用 `--opencode-executable nga`。
+`provider/glm-5.1` 只是示例，必须以本机 `opencode models` 输出为准。企业使用兼容启动器时可将仓库配置中的 `opencode_executable` 设置为例如 `nga`，但必须兼容 `run --model --file` 参数。
 
-可选：安装只读文档 Agent。推荐使用 OpenCode 自带的 `opencode agent create`，授予 `read,glob,grep`
-并拒绝 `bash,edit,webfetch,websearch`。也可以将仓库中的 [Agent 模板](../agents/clangwiki-doc.md)
-复制到 OpenCode 文档所示的全局或项目 Agent 目录，并确认：
-
-```powershell
-opencode agent list
-```
-
-若尚未安装该 Agent，生成时传递 `--agent ""`，ClangWiki 将不附加 `--agent` 参数。
-
-## 5. 一条命令生成 Wiki
-
-```powershell
-clangwiki generate `
-  --repo "D:\projects\target-repository" `
-  --workspace "D:\clangwiki-workspace" `
-  --model "provider/glm-5.1" `
-  --analyzer-executable "D:\projects\ClangWiki\bin\clangwiki-analyzer.exe" `
-  --channel-module-path "src/phy/pdsch" `
-  --channel-module-path "src/phy/pusch" `
-  --channel-module-path "src/phy/pdcch" `
-  --channel-module-path "src/phy/pucch"
-```
-
-程序只运行 CMake 的**配置**步骤以生成编译数据库，不执行 `cmake --build`，不会修改目标仓的
-`CMakeLists.txt` 或源代码。默认拒绝覆盖已有 Markdown；确认重生成时显式加入 `--overwrite`。
-
-常用选项：
+建议使用只读 `clangwiki-doc` Agent：
 
 ```text
---only architecture            只生成系统架构文档
---only module                  只生成各模块文档
---channel-module-path <path>   指定信道根目录；其直接子目录成为叶子
---leaf-module-path <path>      高级覆盖：直接指定叶子；不能与上一参数并用
---skip-cmake                   复用 workspace/build/compile_commands.json
---skip-analysis                复用 workspace/analysis/*.json
---opencode-executable nga      使用企业兼容启动器
---timeout-seconds 1200         放宽单篇文档模型调用超时
+read      allow
+glob      allow
+grep      allow
+edit      deny
+bash      deny
+webfetch  deny
+websearch deny
 ```
 
-### 5.1 信道下一层叶子模块
+OpenCode 只返回模型文本；Markdown 写入、格式校验和任务日志由 ClangWiki 完成。
 
-`--channel-module-path` 使用目标仓根目录下的相对目录。指定 `src/phy/pdsch` 后，`pdsch/encoder`、`pdsch/modulation`、`pdsch/mapping` 等直接子目录分别成为叶子。叶子目录内部更深的源码不继续拆分。
+## 6. 启动本地工作台
 
-框架先生成信道内部叶子文档，再生成 PDSCH/PUSCH 信道汇总，然后生成 `src/phy`、`src` 等父级汇总，最后生成仓库架构和首页。直接位于 `pdsch` 根目录的源码作为 PDSCH 汇总的直接证据。
+```powershell
+D:\ClangWiki\scripts\Start-ClangWiki.ps1 `
+  -InstallRoot "D:\ClangWiki" `
+  -DataRoot "D:\clangwiki-data" `
+  -Port 8082
+```
 
-如果不提供边界参数，框架会尝试识别常见物理信道名称，并使用其直接子目录作为叶子；若信道没有子目录则退回信道自身，若没有识别到信道则退回第一层目录。生产仓建议显式配置。
+浏览器打开：`http://127.0.0.1:8082/`。
 
-目录结构不规则时可以使用 `--leaf-module-path` 直接指定实际叶子路径。两类参数不能同时使用，路径不存在或信道下没有源码子目录时会明确报错。
+可直接使用命令：
 
-## 6. 认证与权限
+```powershell
+& "D:\ClangWiki\.venv\Scripts\clangwiki.exe" `
+  --data-root "D:\clangwiki-data" serve --port 8082
+```
 
-| 主体 | 权限/职责 |
+不要把服务绑定到公网或局域网地址。本版本不设计用户认证和远程访问控制。
+
+## 7. 注册、生成与索引
+
+### 7.1 注册基带信道仓
+
+```powershell
+clangwiki --data-root "D:\clangwiki-data" repo add "D:\projects\pdsch-channel" `
+  --name "PDSCH 信道仓" `
+  --model "provider/glm-5.1" `
+  --analyzer-executable "D:\ClangWiki\bin\clangwiki-analyzer.exe" `
+  --channel-module-path "src/phy/pdsch"
+```
+
+`--channel-module-path "src/phy/pdsch"` 的语义是：将 PDSCH 的**下一层**源码目录（例如 `encoder`、`mapping`、`dmrs`）作为叶子模块；框架先生成叶子文档，再汇聚 PDSCH、PHY 和仓库 Wiki。
+
+### 7.2 生成仓库 Wiki
+
+```powershell
+clangwiki --data-root "D:\clangwiki-data" repo list
+clangwiki --data-root "D:\clangwiki-data" generate --repo-id "repo-xxxxxxxxxxxxxxxx"
+```
+
+同一仓库的写入型任务会串行执行。每次成功生成都会形成新的不可变快照，数据库中的 `active_run_id` 指向当前版本；可在工作台“运行历史”中切换成功快照。
+
+### 7.3 逻辑知识空间
+
+```powershell
+clangwiki --data-root "D:\clangwiki-data" collection create "基带知识空间" `
+  --repo-id "repo-mac" --repo-id "repo-phy" --repo-id "repo-common"
+clangwiki --data-root "D:\clangwiki-data" collection list
+```
+
+知识空间不会合并代码，而是建立成员仓的集合级关系、Wiki 和索引。候选跨仓关系需要工程师在图谱界面确认后才能作为确定关系使用。
+
+### 7.4 检索和问答
+
+```powershell
+clangwiki --data-root "D:\clangwiki-data" index --repo-id "repo-phy"
+clangwiki --data-root "D:\clangwiki-data" search --repo-id "repo-phy" "pdsch_encode"
+clangwiki --data-root "D:\clangwiki-data" ask --repo-id "repo-phy" "PDSCH 编码入口在哪里？"
+```
+
+`ask` 每轮都会重新做符号、全文、可用向量和图关系检索，并将证据编号写入 `context.md`。模型回答必须使用 `[W1]`、`[C2]`、`[G3]`、`[M4]` 一类引用；无效引用经一次修复仍失败时，系统不会展示未经校验的回答。
+
+## 8. 增量与备份
+
+运行记录保存 Git 提交、源码哈希、编译数据库哈希、模块边界配置哈希、Schema 版本和 Embedding 配置档：
+
+- 代码未变化时直接复用当前快照；
+- 叶子模块变化时重生成该叶子及父级汇聚文档；
+- 头文件变化会沿包含关系扩大影响范围；
+- CMake、编译数据库或模块边界变化时执行完整运行；
+- Embedding 配置变化时只重建索引；
+- 集合成员或当前快照变化时只重建集合关系与集合文档。
+
+备份数据根目录：
+
+```powershell
+.\scripts\Backup-ClangWiki.ps1 -DataRoot "D:\clangwiki-data" -Destination "E:\backup"
+```
+
+恢复时先停止服务，再解压同一版本的数据根目录；不要把备份中的数据库与不兼容程序版本混用。
+
+## 9. 故障定位
+
+| 现象 | 检查顺序 |
 |---|---|
-| ClangWiki | 读取目标仓，写入 workspace，启动已认证 CLI。 |
-| OpenCode | 管理 Provider、凭据和模型请求。 |
-| 文档 Agent | 仅读取已批准的仓与上下文；不得编辑、执行 shell 或联网。 |
-| GLM-5.1 | 根据上下文生成 Markdown。 |
+| CMake 配置失败 | 目标仓构建依赖、工具链、`CMakeLists.txt`、生成日志。 |
+| 没有 `compile_commands.json` | 确认 CMake 配置成功且导出了编译数据库。 |
+| 仅 partial 分析 | 检查 `clangwiki-analyzer.exe`、`libclang.dll`、LLVM 版本和 `analysis/diagnostics.json`。 |
+| OpenCode 调用失败 | 运行 `opencode models` 和最小 `opencode run`；检查运行快照中的 `logs/opencode`。 |
+| 向量检索不可用 | 检查可选 wheel 与模型缓存；系统会自动继续符号、全文和图谱检索。 |
+| RAG 回答校验失败 | 查看本轮保存的证据与 OpenCode stdout；确认模型遵守引用契约。 |
 
-无需给 ClangWiki 任何 API、HTTP 端口或密钥访问权限。若企业策略禁止子进程使用 OpenCode CLI，
-则需要管理员明确授权该自动化方式；不要尝试复制 OpenCode 的认证文件或绕过该限制。
+## 10. 兼容命令
 
-## 7. 故障定位
+为兼容旧脚本，以下单仓命令保留一个版本周期：
 
-- `CMakeError`：检查目标仓是否可由 CMake 配置，以及所需工具链/依赖是否已安装。
-- `CompilationDatabaseError`：检查 build 目录是否生成有效 `compile_commands.json`。
-- `partial` 模式：构建并传入 `clangwiki-analyzer`，查看 `analysis/diagnostics.json`。
-- `OpenCodeError`：确认 `opencode models`、模型 ID、企业启动器兼容性及 Agent 是否已安装；查看
-  `workspace/logs/opencode/*.stderr.txt`。
-- `MarkdownValidationError`：保留原始 stdout/stderr，修正模型或 Prompt 后只重跑该 workspace。
+```powershell
+clangwiki generate --repo "D:\projects\target" --workspace "D:\workspace" --model "provider/glm-5.1"
+```
+
+它不会自动注册到多仓平台。新生产环境应优先使用 `repo add`、`generate --repo-id` 和 `serve --data-root`。
