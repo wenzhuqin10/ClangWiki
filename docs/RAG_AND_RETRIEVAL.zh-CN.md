@@ -18,12 +18,12 @@ Source: ...
 
 1. **符号检索**：函数、类型、宏、字段、路径的精确匹配。
 2. **全文检索**：SQLite FTS5 召回中文、英文、标题和标识符。
-3. **向量检索**：可选 FastEmbed ONNX + USearch 持久化索引。
+3. **向量检索**：默认 BGE-M3 ONNX + USearch 持久化索引。
 4. **图关系扩展**：调用者、被调用者、父子模块和跨仓接口。
 
 四路结果经 Reciprocal Rank Fusion 融合，并对精确符号、当前范围、编译器确认关系、模块邻近度、标题命中、当前快照和人工确认关系进行确定性加分。向量运行时不可用时，会明确提示并自动退化为符号、全文和图谱检索。
 
-默认向量档：`intfloat/multilingual-e5-small`（384 维）；高质量档：`intfloat/multilingual-e5-large`。模型缓存仅能由离线准备步骤或管理员显式放入 `models/`，运行时不隐式下载。
+默认向量档：`BAAI/bge-m3`（1024 维、ONNX CPU 推理）；兼容档为 `intfloat/multilingual-e5-small`（384 维）与 `intfloat/multilingual-e5-large`（1024 维）。模型缓存仅能由离线准备步骤或管理员显式放入 `models/`，运行时不隐式下载。
 
 ## 3. RAG 执行链
 

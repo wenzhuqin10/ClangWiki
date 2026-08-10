@@ -22,7 +22,7 @@ DEFAULT_REPOSITORY_CONFIG: dict[str, Any] = {
     "max_source_chars_per_task": 36000,
     "channel_module_paths": [],
     "leaf_module_paths": [],
-    "embedding_profile": "balanced",
+    "embedding_profile": "bge-m3",
 }
 
 
@@ -53,7 +53,15 @@ class Registry:
         # An explicit repository model still always wins.
         default_model_row = self.db.one("SELECT value_json FROM settings WHERE key = ?", ("default_model",))
         default_model = json_loads(default_model_row["value_json"], "") if default_model_row else ""
-        inherited = {"model": default_model} if default_model else {}
+        default_embedding_row = self.db.one(
+            "SELECT value_json FROM settings WHERE key = ?", ("default_embedding_profile",)
+        )
+        default_embedding = json_loads(default_embedding_row["value_json"], "") if default_embedding_row else ""
+        inherited = {}
+        if default_model:
+            inherited["model"] = default_model
+        if default_embedding:
+            inherited["embedding_profile"] = default_embedding
         merged = {**DEFAULT_REPOSITORY_CONFIG, **inherited, **(config or {})}
         self.db.execute(
             "INSERT INTO repositories(id,name,path,config_json,status,git_branch,git_commit,created_at,updated_at) "

@@ -11,7 +11,7 @@
 | LLVM/Clang x64 | 必须 | 运行 `clangwiki-analyzer.exe` 与 `libclang.dll`。 |
 | OpenCode/企业兼容启动器 | 必须 | 已通过企业流程认证的 CLI。 |
 | GLM-5.1 Provider | 必须 | 仅需在 OpenCode 中可用。 |
-| FastEmbed + USearch | 可选 | 本地 CPU 向量检索；缺失时自动降级。 |
+| BGE-M3 ONNX + USearch | 推荐 | 本地 CPU 向量检索；缺失时自动降级。 |
 | Node.js | 不需要 | React 已在交付前构建为静态资源。 |
 | API Key | 不需要且禁止输入 | 凭据由 OpenCode 管理。 |
 
@@ -62,7 +62,7 @@ Set-Location D:\ClangWiki
   -WheelRoot "D:\ClangWiki\offline\wheels"
 ```
 
-离线交付包中应含有 `fastapi`、`pydantic`、`uvicorn`、`httpx`、ClangWiki 及其依赖 wheel。若要启用本地向量检索，还需包含与 Python 3.12 x64 匹配的 `fastembed`、`numpy`、`usearch` 及 ONNX Runtime wheel。
+离线交付包中应含有 `fastapi`、`pydantic`、`uvicorn`、`httpx`、ClangWiki 及其依赖 wheel。默认 BGE-M3 向量检索还需包含与 Python 3.12 x64 匹配的 `numpy`、`usearch`、`onnxruntime`、`transformers` wheel，以及完整模型目录 `models/bge-m3/`（含 `onnx/model.onnx` 和 `onnx/model.onnx_data`）。运行时不下载模型。
 
 ## 4. Clang 分析器
 

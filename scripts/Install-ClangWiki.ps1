@@ -20,7 +20,7 @@ try {
     $python = Join-Path $venv "Scripts\python.exe"
     if (!(Test-Path -LiteralPath $python)) { throw "虚拟环境创建失败：$python" }
     & $python -m pip install --no-index --find-links $wheels --upgrade pip
-    & $python -m pip install --no-index --find-links $wheels --upgrade clangwiki
+    & $python -m pip install --no-index --find-links $wheels --upgrade "clangwiki[rag]"
     & $python -m clangwiki --version
     Write-Host "ClangWiki 已安装。请运行 scripts\Start-ClangWiki.ps1 启动本地服务。" -ForegroundColor Green
 } finally { Pop-Location }

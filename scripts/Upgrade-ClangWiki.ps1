@@ -18,6 +18,6 @@ if (!$SkipBackup -and $DataRoot) {
         & $script -DataRoot $DataRoot -Destination (Join-Path ([IO.Path]::GetDirectoryName($DataRoot)) "clangwiki-upgrade-backups")
     }
 }
-& $python -m pip install --no-index --find-links $wheels --upgrade clangwiki
+& $python -m pip install --no-index --find-links $wheels --upgrade "clangwiki[rag]"
 & $python -m clangwiki --version
 Write-Host "程序已升级。首次启动会自动执行数据库迁移；请保留升级前备份。" -ForegroundColor Green

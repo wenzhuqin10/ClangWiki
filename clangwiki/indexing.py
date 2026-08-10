@@ -13,16 +13,26 @@ from .registry import Registry
 
 
 EMBEDDING_PROFILES = {
+    "bge-m3": {
+        "model": "BAAI/bge-m3",
+        "dimension": 1024,
+        "max_length": 2048,
+        "backend": "onnx",
+        "local_directory": "bge-m3",
+        "description": "BGE-M3：面向中文工程知识、英文标识符与代码说明的本地 ONNX CPU 向量检索。",
+    },
     "balanced": {
         "model": "intfloat/multilingual-e5-small",
         "dimension": 384,
         "max_length": 512,
+        "backend": "fastembed",
         "description": "平衡档：中英文语义检索，适合普通 CPU。",
     },
     "quality": {
         "model": "intfloat/multilingual-e5-large",
         "dimension": 1024,
         "max_length": 512,
+        "backend": "fastembed",
         "description": "高质量档：更高召回质量与资源占用。",
     },
 }
@@ -67,8 +77,11 @@ class IndexService:
         chunks = list(self._repository_chunks(repository))
         return self._store_and_embed("repository", repository_id, chunks, profile_name)
 
-    def index_collection(self, collection_id: str, profile: str = "balanced") -> dict[str, Any]:
-        self.registry.get_collection(collection_id)
+    def index_collection(self, collection_id: str, profile: str | None = None) -> dict[str, Any]:
+        collection = self.registry.get_collection(collection_id)
+        profile = profile or str(collection["config"].get("embedding_profile") or "bge-m3")
+        if profile not in EMBEDDING_PROFILES:
+            raise ValueError(f"未知 Embedding 配置档：{profile}")
         chunks = list(self._collection_chunks(collection_id))
         return self._store_and_embed("collection", collection_id, chunks, profile)
 
@@ -386,7 +399,7 @@ class IndexService:
 
 
 class LocalVectorIndex:
-    """Optional FastEmbed + USearch adapter. Absence never disables lexical search."""
+    """Optional local embedding + USearch adapter. Absence never disables lexical search."""
 
     def __init__(self, index_root: Path, model_cache: Path, profile: str) -> None:
         self.index_root = index_root
@@ -398,10 +411,23 @@ class LocalVectorIndex:
 
     def available(self) -> tuple[bool, str | None]:
         try:
-            import fastembed  # noqa: F401
             import usearch  # noqa: F401
         except ImportError:
-            return False, "本地向量组件未安装；当前使用符号、全文和图谱检索。生产环境请安装 clangwiki[rag]。"
+            return False, "USearch 未安装；当前使用符号、全文和图谱检索。"
+        if self.model_info.get("backend") == "onnx":
+            try:
+                import onnxruntime  # noqa: F401
+                from transformers import AutoTokenizer  # noqa: F401
+            except ImportError:
+                return False, "ONNX Runtime 或 Transformers 未安装；BGE-M3 向量通道已降级。"
+            model_directory = self.model_cache / str(self.model_info["local_directory"])
+            if not (model_directory / "onnx" / "model.onnx").is_file():
+                return False, f"未发现离线 BGE-M3 模型：{model_directory}"
+            return True, None
+        try:
+            import fastembed  # noqa: F401
+        except ImportError:
+            return False, "FastEmbed 未安装；当前使用符号、全文和图谱检索。生产环境请安装 clangwiki[rag]。"
         return True, None
 
     def update(
@@ -410,6 +436,7 @@ class LocalVectorIndex:
         changed: list[ChunkRecord],
         removed: list[dict[str, Any]],
     ) -> dict[str, Any]:
+        self.index_root.mkdir(parents=True, exist_ok=True)
         available, warning = self.available()
         if not available:
             return {"available": False, "warning": warning}
@@ -436,7 +463,7 @@ class LocalVectorIndex:
             else:
                 values = all_chunks
             if values:
-                vectors = list(model.embed([_embedding_passage(item.content) for item in values], batch_size=32))
+                vectors = self._embed_passages(model, [item.content for item in values])
                 for item, vector in zip(values, vectors):
                     if item.vector_key in index:
                         index.remove(item.vector_key)
@@ -460,7 +487,7 @@ class LocalVectorIndex:
             from usearch.index import Index
 
             model = self._embedding_model()
-            vector = next(iter(model.query_embed(_embedding_query(query))))
+            vector = self._embed_query(model, query)
             index = Index.restore(str(self.index_path), view=True)
             matches = index.search(vector, limit)
             return [(int(key), float(distance)) for key, distance in zip(matches.keys, matches.distances)], None
@@ -468,6 +495,17 @@ class LocalVectorIndex:
             return [], f"向量查询失败，已退化到其他检索通道：{exc}"
 
     def _embedding_model(self):
+        if self.model_info.get("backend") == "onnx":
+            import onnxruntime as ort
+            from transformers import AutoTokenizer
+
+            model_directory = self.model_cache / str(self.model_info["local_directory"])
+            tokenizer = AutoTokenizer.from_pretrained(model_directory, local_files_only=True)
+            session = ort.InferenceSession(
+                str(model_directory / "onnx" / "model.onnx"),
+                providers=["CPUExecutionProvider"],
+            )
+            return session, tokenizer
         from fastembed import TextEmbedding
 
         self.model_cache.mkdir(parents=True, exist_ok=True)
@@ -488,6 +526,33 @@ class LocalVectorIndex:
                 model_file="onnx/model.onnx",
             )
             return TextEmbedding(model_name=model_name, cache_dir=str(self.model_cache), lazy_load=True)
+
+    def _embed_passages(self, model: Any, values: list[str]) -> list[Any]:
+        if self.model_info.get("backend") == "onnx":
+            return self._onnx_embeddings(model, values)
+        return list(model.embed([_embedding_passage(value) for value in values], batch_size=32))
+
+    def _embed_query(self, model: Any, value: str) -> Any:
+        if self.model_info.get("backend") == "onnx":
+            return self._onnx_embeddings(model, [value])[0]
+        return next(iter(model.query_embed(_embedding_query(value))))
+
+    def _onnx_embeddings(self, model: Any, values: list[str]) -> list[Any]:
+        import numpy as np
+
+        session, tokenizer = model
+        encoded = tokenizer(
+            values,
+            padding=True,
+            truncation=True,
+            max_length=int(self.model_info["max_length"]),
+            return_tensors="np",
+        )
+        inputs = {item.name: encoded[item.name] for item in session.get_inputs()}
+        outputs = session.run(None, inputs)
+        vectors = outputs[1] if len(outputs) > 1 else outputs[0][:, 0, :]
+        norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+        return list(vectors / np.maximum(norms, 1e-12))
 
 
 def _document_chunks(document: dict[str, Any]) -> Iterator[ChunkRecord]:

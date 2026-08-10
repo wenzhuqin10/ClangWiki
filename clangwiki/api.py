@@ -464,7 +464,7 @@ def _source_tree(root: Path, limit: int = 10000) -> list[dict[str, Any]]:
 
 def _vector_runtime_status() -> dict[str, Any]:
     values = {}
-    for package in ("fastembed", "usearch"):
+    for package in ("onnxruntime", "FlagEmbedding", "fastembed", "usearch"):
         try:
             module = __import__(package)
             values[package] = {"available": True, "version": getattr(module, "__version__", "unknown")}

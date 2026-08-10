@@ -16,10 +16,12 @@ dependencies = [
 
 [project.optional-dependencies]
 rag = [
-    "fastembed>=0.7,<0.9",
     "numpy>=2.0,<3",
+    "onnxruntime>=1.18,<2",
+    "transformers>=4.40,<6",
     "usearch>=2.20,<3; python_version < '3.13'",
 ]
+legacy-e5 = ["fastembed>=0.7,<0.9"]
 test = ["pytest>=8.0", "httpx>=0.27,<1"]
 
 [project.scripts]

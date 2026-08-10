@@ -3,7 +3,8 @@ param(
     [Parameter(Mandatory = $true)] [string] $ProjectRoot,
     [Parameter(Mandatory = $true)] [string] $OutputRoot,
     [string] $PythonCommand = "py -3.12",
-    [switch] $IncludeRag
+    [switch] $IncludeRag,
+    [string] $BgeModelRoot
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,7 +20,12 @@ try {
     Invoke-Expression "$PythonCommand -m pip wheel --wheel-dir `"$wheels`" ."
     Invoke-Expression "$PythonCommand -m pip download --dest `"$wheels`" fastapi pydantic uvicorn httpx"
     if ($IncludeRag) {
-        Invoke-Expression "$PythonCommand -m pip download --dest `"$wheels`" fastembed numpy usearch"
+        Invoke-Expression "$PythonCommand -m pip download --dest `"$wheels`" numpy usearch onnxruntime transformers"
+        if ([string]::IsNullOrWhiteSpace($BgeModelRoot)) { throw "IncludeRag requires -BgeModelRoot pointing to the complete bge-m3 directory." }
+        $model = [IO.Path]::GetFullPath($BgeModelRoot)
+        if (!(Test-Path -LiteralPath (Join-Path $model "onnx\model.onnx"))) { throw "BGE-M3 ONNX model was not found: $model" }
+        New-Item -ItemType Directory -Force -Path (Join-Path $output "models") | Out-Null
+        Copy-Item -LiteralPath $model -Destination (Join-Path $output "models\bge-m3") -Recurse -Force
     }
     $manifest = Join-Path $output "SHA256SUMS.txt"
     Get-ChildItem -LiteralPath $output -Recurse -File |
