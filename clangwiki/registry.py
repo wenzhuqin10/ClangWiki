@@ -47,7 +47,14 @@ class Registry:
         repository_id = self._stable_id("repo", str(root).casefold())
         now = time.time()
         branch, commit = git_identity(root)
-        merged = {**DEFAULT_REPOSITORY_CONFIG, **(config or {})}
+        # The platform default is intentionally stored outside individual
+        # repositories: it lets an administrator change the preferred
+        # OpenCode model without exposing, copying, or parsing credentials.
+        # An explicit repository model still always wins.
+        default_model_row = self.db.one("SELECT value_json FROM settings WHERE key = ?", ("default_model",))
+        default_model = json_loads(default_model_row["value_json"], "") if default_model_row else ""
+        inherited = {"model": default_model} if default_model else {}
+        merged = {**DEFAULT_REPOSITORY_CONFIG, **inherited, **(config or {})}
         self.db.execute(
             "INSERT INTO repositories(id,name,path,config_json,status,git_branch,git_commit,created_at,updated_at) "
             "VALUES(?,?,?,?,?,?,?,?,?)",
