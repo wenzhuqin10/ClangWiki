@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from clangwiki.api import create_app
 from clangwiki.graph import GraphService
+from clangwiki.platform import PlatformGenerationService, _hash_json, repository_file_hashes
 
 
 def _repository(path: Path, name: str = "demo") -> Path:
@@ -137,3 +138,64 @@ def test_module_graph_keeps_isolated_modules(tmp_path: Path) -> None:
     assert graph.status_code == 200
     assert {node["module_id"] for node in graph.json()["nodes"]} == {"pdsch", "dmrs"}
     assert graph.json()["edges"] == []
+
+
+def test_generation_config_hash_is_stable_across_cli_and_api_defaults() -> None:
+    repository_config = {
+        "model": "deepseek/deepseek-v4-flash",
+        "agent": "",
+        "language": "简体中文",
+        "max_source_chars_per_task": 18000,
+        "channel_module_paths": [],
+        "leaf_module_paths": [],
+    }
+    cli_config = {
+        **repository_config,
+        "force": False,
+        "skip_cmake": False,
+        "skip_analysis": False,
+    }
+    api_config = {**repository_config}
+
+    canonical_cli = PlatformGenerationService._generation_config(cli_config)
+    canonical_api = PlatformGenerationService._generation_config(api_config)
+    assert canonical_cli == canonical_api
+    assert _hash_json(canonical_cli) == _hash_json(canonical_api)
+    assert canonical_api["only"] is None
+    assert canonical_api["skip_cmake"] is False
+    assert canonical_api["skip_analysis"] is False
+
+
+def test_unchanged_generation_reuses_snapshot_and_restores_ready_status(tmp_path: Path) -> None:
+    app = create_app(tmp_path / "data")
+    client = TestClient(app)
+    repository_root = _repository(tmp_path)
+    repository = client.post("/api/repositories", json={
+        "path": str(repository_root),
+        "config": {"model": "deepseek/deepseek-v4-flash"},
+    }).json()
+    services = app.state.services
+    run_id = "run-reusable"
+    run_root = services.registry.run_root(repository["id"], run_id)
+    run_root.mkdir(parents=True)
+    canonical = PlatformGenerationService._generation_config(repository["config"])
+    config_hash = _hash_json(canonical)
+    manifest = {
+        "config_hash": config_hash,
+        "file_hashes": repository_file_hashes(repository_root),
+    }
+    services.database.execute(
+        "INSERT INTO runs(id,repository_id,status,config_hash,schema_version,artifact_path,manifest_json,created_at) "
+        "VALUES(?,?,?,?,?,?,?,?)",
+        (run_id, repository["id"], "completed", config_hash, "test", str(run_root), json.dumps(manifest), time.time()),
+    )
+    services.database.execute(
+        "UPDATE repositories SET active_run_id=?,status='failed' WHERE id=?",
+        (run_id, repository["id"]),
+    )
+
+    result = services.generation.generate_repository(repository["id"])
+
+    assert result["reused"] is True
+    assert result["run"]["id"] == run_id
+    assert services.registry.get_repository(repository["id"])["status"] == "ready"

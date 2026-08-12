@@ -62,6 +62,10 @@ class PlatformGenerationService:
         force = bool(config.get("force"))
         changed_paths = _changed_paths(previous_manifest.get("file_hashes", {}), current_hashes)
         if previous and not force and not changed_paths and previous.get("config_hash") == config_hash:
+            self.db.execute(
+                "UPDATE repositories SET status='ready',updated_at=? WHERE id=?",
+                (time.time(), repository_id),
+            )
             if progress:
                 progress({"stage": "unchanged", "message": "代码和生成配置均未变化，继续使用当前文档快照。", "progress": 100})
             return {"run": previous, "reused": True, "changed_paths": []}
@@ -167,7 +171,13 @@ class PlatformGenerationService:
                 "UPDATE runs SET status='failed',manifest_json=?,finished_at=? WHERE id=?",
                 (json_dumps({**manifest, "error": str(exc)}), time.time(), run_id),
             )
-            self.db.execute("UPDATE repositories SET status='failed',updated_at=? WHERE id=?", (time.time(), repository_id))
+            # A failed/cancelled attempt remains visible in run history, but it
+            # must not make an existing successful Wiki snapshot look unusable.
+            repository_status = "ready" if previous and previous.get("status") == "completed" else "failed"
+            self.db.execute(
+                "UPDATE repositories SET status=?,updated_at=? WHERE id=?",
+                (repository_status, time.time(), repository_id),
+            )
             raise
 
     def list_runs(self, repository_id: str) -> list[dict[str, Any]]:
@@ -204,11 +214,23 @@ class PlatformGenerationService:
 
     @staticmethod
     def _generation_config(config: dict[str, Any]) -> dict[str, Any]:
-        keys = {
-            "model", "agent", "language", "max_source_chars_per_task", "channel_module_paths",
-            "leaf_module_paths", "only", "skip_cmake", "skip_analysis",
+        # CLI flags explicitly carry false/empty defaults while the HTTP API omits
+        # them.  Canonicalise both entry points before hashing so an unchanged
+        # repository does not accidentally start another expensive model run.
+        only = sorted({str(item) for item in (config.get("only") or ()) if str(item)})
+        channel_paths = sorted({str(item) for item in (config.get("channel_module_paths") or ()) if str(item)})
+        leaf_paths = sorted({str(item) for item in (config.get("leaf_module_paths") or ()) if str(item)})
+        return {
+            "agent": str(config.get("agent") or ""),
+            "channel_module_paths": channel_paths,
+            "language": str(config.get("language") or "简体中文"),
+            "leaf_module_paths": leaf_paths,
+            "max_source_chars_per_task": int(config.get("max_source_chars_per_task") or 36000),
+            "model": str(config.get("model") or "").strip(),
+            "only": only or None,
+            "skip_analysis": bool(config.get("skip_analysis", False)),
+            "skip_cmake": bool(config.get("skip_cmake", False)),
         }
-        return {key: config.get(key) for key in sorted(keys)}
 
     @staticmethod
     def _requires_full_rebuild(changed_paths: list[str], previous_manifest: dict[str, Any], config_hash: str) -> bool:
