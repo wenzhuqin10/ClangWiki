@@ -100,3 +100,40 @@ def test_graph_and_logical_collection_keep_repositories_isolated(tmp_path: Path)
     assert collection_graph.status_code == 200
     # The collection only stores logical links; it never gains a source-tree copy.
     assert not (services.registry.collection_root(collection["id"]) / "source").exists()
+
+
+def test_module_graph_keeps_isolated_modules(tmp_path: Path) -> None:
+    app = create_app(tmp_path / "data")
+    client = TestClient(app)
+    repository = client.post(
+        "/api/repositories", json={"path": str(_repository(tmp_path))},
+    ).json()
+    services = app.state.services
+    run_id = "run-isolated-modules"
+    run_root = services.registry.run_root(repository["id"], run_id)
+    knowledge = run_root / "knowledge"
+    knowledge.mkdir(parents=True)
+    (knowledge / "modules.json").write_text(json.dumps([
+        {"module_id": "pdsch", "display_name": "PDSCH", "source_path": "src", "parent_id": None, "direct_files": ["src/demo.c"]},
+        {"module_id": "dmrs", "display_name": "DMRS", "source_path": "dmrs", "parent_id": None, "direct_files": []},
+    ]), encoding="utf-8")
+    (knowledge / "symbols.json").write_text("[]", encoding="utf-8")
+    (knowledge / "relations.json").write_text("[]", encoding="utf-8")
+    services.database.execute(
+        "INSERT INTO runs(id,repository_id,status,config_hash,schema_version,artifact_path,manifest_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
+        (run_id, repository["id"], "completed", "test", "test", str(run_root), "{}", time.time()),
+    )
+    services.database.execute(
+        "UPDATE repositories SET active_run_id=?,status='ready' WHERE id=?",
+        (run_id, repository["id"]),
+    )
+    GraphService(services.database, services.registry).ingest_repository(
+        repository["id"], run_id, run_root,
+    )
+
+    graph = client.get(
+        f"/api/graph?scope_type=repository&scope_id={repository['id']}&level=module",
+    )
+    assert graph.status_code == 200
+    assert {node["module_id"] for node in graph.json()["nodes"]} == {"pdsch", "dmrs"}
+    assert graph.json()["edges"] == []

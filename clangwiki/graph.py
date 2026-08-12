@@ -442,8 +442,30 @@ class GraphService:
                 }
             aggregate_edges[key]["count"] += 1
             used.update((source, target))
+        # An overview graph must also contain isolated owners. Otherwise a
+        # repository with six modules but only three cross-module relations is
+        # rendered as if the other modules did not exist.
+        if level == "repository":
+            available = {
+                f"repo:{node['repository_id']}"
+                for node in node_map.values()
+                if node.get("repository_id")
+            }
+        elif level == "module":
+            available = {
+                node["id"]
+                for node in node_map.values()
+                if node.get("kind") == "module"
+            }
+        else:
+            available = {
+                node["id"]
+                for node in node_map.values()
+                if node.get("kind") == "file"
+            }
+        ordered_node_ids = sorted(used) + sorted(available - used)
         public_nodes: list[dict[str, Any]] = []
-        for node_id in used:
+        for node_id in ordered_node_ids:
             node = node_map.get(node_id)
             if node is None and node_id.startswith("module:"):
                 # Aggregated IDs intentionally refer to the corresponding module
@@ -467,7 +489,11 @@ class GraphService:
                 repository = self.registry.get_repository(repository_id)
                 public_nodes.append({"id": node_id, "repository_id": repository_id, "kind": "repository", "name": repository["name"], "path": repository["path"]})
         edge_values = list(aggregate_edges.values())
-        return {"nodes": public_nodes[:limit], "edges": edge_values[:limit], "truncated": len(edge_values) > limit}
+        return {
+            "nodes": public_nodes[:limit],
+            "edges": edge_values[:limit],
+            "truncated": len(edge_values) > limit or len(public_nodes) > limit,
+        }
 
     def _nodes_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         placeholders = ",".join("?" for _ in ids)
