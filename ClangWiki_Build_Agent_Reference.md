@@ -705,11 +705,11 @@ websearch  deny
 推荐命令：
 
 ```powershell
-opencode run `
-  --agent "clangwiki-doc" `
-  --model "provider/glm-5.1" `
-  --file "D:\clangwiki_workspace\tasks\module_network_context.md" `
-  "只输出最终 Markdown 正文，不要输出解释或代码围栏。"
+Get-Content -Raw "D:\clangwiki_workspace\tasks\module_network_context.md" |
+  opencode run `
+    "从标准输入读取 ClangWiki 任务上下文，只输出最终 Markdown 正文。" `
+    --agent "clangwiki-doc" `
+    --model "provider/glm-5.1"
 ```
 
 Python 调用：
@@ -749,25 +749,24 @@ class OpenCodeRunner:
             raise FileNotFoundError(f"上下文文件不存在：{context_file}")
 
         prompt = (
-            "根据附件中的 ClangWiki 任务上下文生成技术文档。"
+            "从标准输入读取 ClangWiki 任务上下文并生成技术文档。"
             "只输出最终 Markdown 正文，不要输出解释、前言或代码围栏。"
         )
 
         command = [
             self.executable,
             "run",
-            "--agent",
-            self.agent,
+            prompt,
             "--model",
             self.model,
-            "--file",
-            str(context_file),
-            prompt,
+            "--agent",
+            self.agent,
         ]
 
         result = subprocess.run(
             command,
             cwd=repository,
+            input=context_file.read_text(encoding="utf-8"),
             capture_output=True,
             text=True,
             encoding="utf-8",

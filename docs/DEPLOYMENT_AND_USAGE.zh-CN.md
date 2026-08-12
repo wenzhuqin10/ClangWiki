@@ -91,7 +91,7 @@ opencode models
 opencode run --model "provider/glm-5.1" "只回复 GLM_READY"
 ```
 
-`provider/glm-5.1` 只是示例，必须以本机 `opencode models` 输出为准。企业使用兼容启动器时可将仓库配置中的 `opencode_executable` 设置为例如 `nga`，但必须兼容 `run --model --file` 参数。
+`provider/glm-5.1` 只是示例，必须以本机 `opencode models` 输出为准。企业使用兼容启动器时可将仓库配置中的 `opencode_executable` 设置为例如 `nga`，但必须兼容 `run <prompt> --model <model> --agent <agent>` 参数，并能从标准输入读取任务上下文。
 
 建议使用只读 `clangwiki-doc` Agent：
 

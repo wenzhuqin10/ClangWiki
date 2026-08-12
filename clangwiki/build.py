@@ -54,6 +54,40 @@ def validate_compilation_database(path: Path) -> Path:
     return path
 
 
+def create_fallback_compilation_database(repo: Path, build_dir: Path) -> Path:
+    """Create a read-only, best-effort compdb for non-standalone source subtrees.
+
+    This does not claim to reproduce the parent project's build.  It only lets
+    the lexical/libclang-compatible analysis path continue with an explicit
+    partial-analysis diagnostic when a downloaded subtree cannot be configured
+    as an independent CMake project.
+    """
+    compiler = shutil.which("clang") or shutil.which("clang-cl") or "clang"
+    sources = sorted(
+        path.resolve()
+        for path in repo.rglob("*")
+        if path.is_file()
+        and path.suffix.lower() in {".c", ".cc", ".cpp", ".cxx"}
+        and not any(part in {".git", "build", "dist", "third_party", "vendor", "node_modules"}
+                    for part in path.relative_to(repo).parts)
+    )
+    if not sources:
+        raise CompilationDatabaseError(f"代码仓中没有可分析的 C/C++ 翻译单元：{repo}")
+    build_dir.mkdir(parents=True, exist_ok=True)
+    payload = [
+        {
+            "directory": str(repo),
+            "file": str(source),
+            "arguments": [compiler, "-fsyntax-only", "-I", str(repo), str(source)],
+            "clangwiki_partial": True,
+        }
+        for source in sources
+    ]
+    target = build_dir / "compile_commands.json"
+    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return validate_compilation_database(target)
+
+
 def source_coverage(repo: Path, compilation_database: Path) -> dict[str, object]:
     source_suffixes = {".c", ".cc", ".cpp", ".cxx"}
     excluded = {".git", "build", "dist", "third_party", "vendor", "node_modules"}

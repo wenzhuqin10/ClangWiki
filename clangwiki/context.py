@@ -17,6 +17,20 @@ def build_context(
     max_source_chars: int,
     generated_output_root: Path | None = None,
 ) -> Path:
+    # This is a total evidence budget, not merely a source-code budget. Large
+    # baseband modules may contain thousands of symbols and tens of thousands
+    # of relations; leaving those lists unbounded can exceed the model context
+    # even when source excerpts themselves are capped.
+    evidence_budget = max(4_000, max_source_chars)
+    has_children = bool(task.child_document_paths)
+    budgets = {
+        "files": int(evidence_budget * 0.10),
+        "children": int(evidence_budget * (0.30 if has_children else 0.0)),
+        "symbols": int(evidence_budget * (0.17 if has_children else 0.20)),
+        "relations": int(evidence_budget * (0.18 if has_children else 0.25)),
+        "source": int(evidence_budget * (0.25 if has_children else 0.45)),
+    }
+    truncation: dict[str, tuple[int, int]] = {}
     selected_files = sorted({file for module_id in task.module_ids for file in modules[module_id].files})
     selected_symbols = [symbol for module_id in task.module_ids for symbol in modules[module_id].symbols]
     selected_names = {str(symbol.get("qualified_name") or symbol.get("name")) for symbol in selected_symbols}
@@ -53,9 +67,14 @@ def build_context(
                 f"- 父模块：`{parent.module_id}`" if parent else "- 父模块：无",
                 "- 子模块：" + (", ".join(f"`{child_id}`" for child_id in module.child_ids) or "无"),
                 "- 本层直接拥有的源码文件：",
-                *([f"  - `{file}`" for file in module.files] or ["  - 无；本节点完全由子模块向上汇聚。"]),
             ]
         )
+        file_lines = [f"  - `{file}`" for file in module.files]
+        selected_file_lines, included = _bounded_lines(file_lines, budgets["files"])
+        blocks.extend(selected_file_lines or ["  - 无；本节点完全由子模块向上汇聚。"])
+        if included < len(file_lines):
+            blocks.append(f"  - ……另有 {len(file_lines) - included} 个文件因上下文预算未展开。")
+        truncation["模块文件"] = (included, len(file_lines))
 
     blocks.extend(["", "## 已生成的直接子文档"])
     if task.child_document_paths:
@@ -64,7 +83,8 @@ def build_context(
             for relative_path in task.child_document_paths
             if generated_output_root is not None and (generated_output_root / relative_path).is_file()
         }
-        per_child_budget = max(1, max_source_chars // max(1, len(available_children)))
+        per_child_budget = max(1, budgets["children"] // max(1, len(available_children)))
+        included_children = 0
         for relative_path in task.child_document_paths:
             child_path = available_children.get(relative_path)
             if child_path is None:
@@ -72,6 +92,7 @@ def build_context(
                 continue
             content = child_path.read_text(encoding="utf-8", errors="replace")
             excerpt = content[:per_child_budget]
+            included_children += 1
             blocks.extend(
                 [
                     f"### 子文档 `{relative_path}`",
@@ -82,20 +103,36 @@ def build_context(
             )
             if len(excerpt) < len(content):
                 blocks.append("> 该子文档因上下文预算被截断，汇总时必须在限制章节中说明。")
+        truncation["直接子文档"] = (included_children, len(task.child_document_paths))
     else:
         blocks.append("- 无。叶子模块应直接依据 Clang 事实和源码生成最小单元文档。")
     blocks.extend(["", "## 符号事实"])
-    for symbol in selected_symbols:
-        blocks.append(f"- `{symbol.get('kind')}` `{symbol.get('qualified_name')}` — "
-                      f"`{symbol.get('file_path')}:{symbol.get('line_start')}-{symbol.get('line_end')}` "
-                      f"(certainty={symbol.get('certainty', 'compiler')})")
+    symbol_lines = [
+        f"- `{symbol.get('kind')}` `{symbol.get('qualified_name')}` — "
+        f"`{symbol.get('file_path')}:{symbol.get('line_start')}-{symbol.get('line_end')}` "
+        f"(certainty={symbol.get('certainty', 'compiler')})"
+        for symbol in selected_symbols
+    ]
+    selected_symbol_lines, included_symbols = _bounded_lines(symbol_lines, budgets["symbols"])
+    blocks.extend(selected_symbol_lines)
+    if included_symbols < len(symbol_lines):
+        blocks.append(f"> 符号清单已截断：展示 {included_symbols}/{len(symbol_lines)} 条。")
+    truncation["符号事实"] = (included_symbols, len(symbol_lines))
     blocks.extend(["", "## 关系事实"])
-    for relation in relations:
-        blocks.append(f"- `{relation.get('source')}` --{relation.get('kind')}--> `{relation.get('target')}` "
-                      f"at `{relation.get('file_path')}:{relation.get('line')}` "
-                      f"(confidence={relation.get('confidence')}, certainty={relation.get('certainty', 'compiler')})")
+    relation_lines = [
+        f"- `{relation.get('source')}` --{relation.get('kind')}--> `{relation.get('target')}` "
+        f"at `{relation.get('file_path')}:{relation.get('line')}` "
+        f"(confidence={relation.get('confidence')}, certainty={relation.get('certainty', 'compiler')})"
+        for relation in relations
+    ]
+    selected_relation_lines, included_relations = _bounded_lines(relation_lines, budgets["relations"])
+    blocks.extend(selected_relation_lines)
+    if included_relations < len(relation_lines):
+        blocks.append(f"> 关系清单已截断：展示 {included_relations}/{len(relation_lines)} 条。")
+    truncation["关系事实"] = (included_relations, len(relation_lines))
     blocks.extend(["", "## 源代码片段"])
     used = 0
+    included_sources = 0
     for relative in selected_files:
         source = repo / relative
         try:
@@ -103,16 +140,44 @@ def build_context(
         except OSError:
             continue
         block = f"\n### `{relative}`\n```{_language_hint(source.suffix)}\n{content}\n```\n"
-        if used + len(block) > max_source_chars:
+        remaining = budgets["source"] - used
+        if remaining <= 120:
             blocks.append(
                 "\n> 为控制上下文长度，未加入其余源文件内容。文档必须在限制章节中说明上下文已截断，"
                 "只能依据上述符号与关系事实描述未附源码的部分。"
             )
             break
+        if len(block) > remaining:
+            excerpt = content[: max(0, remaining - len(relative) - 80)]
+            blocks.append(f"\n### `{relative}`\n```{_language_hint(source.suffix)}\n{excerpt}\n```\n")
+            blocks.append("> 该文件源码片段因上下文预算被截断。")
+            used = budgets["source"]
+            included_sources += 1
+            break
         blocks.append(block)
         used += len(block)
+        included_sources += 1
+    truncation["源码文件"] = (included_sources, len(selected_files))
+    blocks.extend(["", "## 上下文预算与截断统计"])
+    blocks.append(f"- 证据总预算：约 {evidence_budget} 字符（章节契约与规则不计入）。")
+    for label, (included, total) in truncation.items():
+        status = "完整" if included >= total else "已截断"
+        blocks.append(f"- {label}：{included}/{total}（{status}）。")
+    blocks.append("- 文档只能依据以上已提供证据；未展开部分不得由模型自行补造。")
     write_text(output_path, "\n".join(blocks) + "\n")
     return output_path
+
+
+def _bounded_lines(lines: list[str], budget: int) -> tuple[list[str], int]:
+    selected: list[str] = []
+    used = 0
+    for line in lines:
+        cost = len(line) + 1
+        if used + cost > budget:
+            break
+        selected.append(line)
+        used += cost
+    return selected, len(selected)
 
 
 def _language_hint(suffix: str) -> str:

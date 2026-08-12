@@ -147,7 +147,11 @@ class PlatformGenerationService:
                 "UPDATE repositories SET status='ready',active_run_id=?,git_branch=?,git_commit=?,updated_at=? WHERE id=?",
                 (run_id, branch, commit, time.time(), repository_id),
             )
+            if progress:
+                progress({"stage": "graph", "message": "正在写入模块、文件与符号关系图", "progress": 95})
             graph_result = self.graph.ingest_repository(repository_id, run_id, run_root)
+            if progress:
+                progress({"stage": "wiki", "message": "正在登记 Wiki 快照与导航信息", "progress": 97})
             documents = self.wiki.ingest_generated(repository_id, run_id, run_root)
             index_result: dict[str, Any] | None = None
             if config.get("build_index", True):

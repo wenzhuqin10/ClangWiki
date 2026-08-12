@@ -376,6 +376,11 @@ def create_app(data_root: Path, web_root: Path | None = None) -> FastAPI:
     def job(job_id: str) -> dict[str, Any]:
         return services.jobs.get(job_id)
 
+    @app.get("/api/jobs/{job_id}/timeline")
+    def job_timeline(job_id: str) -> dict[str, Any]:
+        """Return persisted progress events for the task-detail panel."""
+        return {"job": services.jobs.get(job_id), "events": services.jobs.events(job_id)}
+
     @app.post("/api/jobs/{job_id}/cancel")
     def cancel_job(job_id: str) -> dict[str, Any]:
         return services.jobs.cancel(job_id)

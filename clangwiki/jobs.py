@@ -73,11 +73,15 @@ class PersistentJobManager:
                 progress=100, result_json=json_dumps(result), finished_at=time.time(),
             )
         except Exception as exc:
+            error = _failure_detail(exc)
             self._update(
-                job_id, status="failed", stage="failed", message="任务执行失败",
-                error=str(exc), finished_at=time.time(),
+                job_id, status="failed", stage="failed", message="任务执行失败：" + _one_line(str(exc)),
+                error=error, finished_at=time.time(),
             )
-            self.emit(job_id, {"stage": "failed", "message": str(exc), "progress": self.get(job_id)["progress"]})
+            self.emit(job_id, {
+                "stage": "failed", "message": "生成失败：" + _one_line(str(exc)),
+                "progress": self.get(job_id)["progress"], "error": error,
+            })
             traceback.print_exc()
         finally:
             with self.lock:
@@ -145,3 +149,14 @@ class PersistentJobManager:
         result["payload"] = json_loads(result.pop("payload_json"), {})
         result["result"] = json_loads(result.pop("result_json"), {})
         return result
+
+
+def _one_line(value: str, limit: int = 360) -> str:
+    value = " ".join(value.split())
+    return value[:limit] + ("…" if len(value) > limit else "")
+
+
+def _failure_detail(exc: Exception) -> str:
+    """Keep a useful failure explanation without exposing a full server traceback."""
+    detail = str(exc).strip() or repr(exc)
+    return f"错误类型：{type(exc).__name__}\n\n{detail[:6000]}"

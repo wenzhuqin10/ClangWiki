@@ -91,8 +91,13 @@ README.md
 ClangWiki 使用子进程调用：
 
 ```text
-<opencode-executable> run --model <provider/model> --file <task-context.md> [--agent <agent>]
+<opencode-executable> run "<document-prompt>" --model <provider/model> [--agent <agent>]
 ```
+
+任务上下文不通过 `--file` 暴露为仓库外附件，而由 ClangWiki 通过标准输入传给
+`opencode run`。OpenCode 的工作目录保持为被分析代码仓；默认的
+`clangwiki-doc` Agent 禁止全部工具，只依据有界上下文返回 Markdown，因此既不需要
+`external_directory` 授权，也不会读取 OpenCode 认证文件。
 
 - `cwd` 始终是目标代码仓，供 OpenCode 读取已批准的源码。
 - ClangWiki 只收集标准输出、写入 Markdown，并保存 stdout/stderr 日志。

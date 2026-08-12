@@ -223,6 +223,11 @@ class GraphService:
         if certainty:
             conditions.append("certainty=?")
             parameters.append(certainty)
+        if level in {"repository", "module", "file"}:
+            # Structural containment/definition edges collapse to self-edges at
+            # aggregate levels and can consume the SQL limit before any actual
+            # dependency or call edge is read.
+            conditions.append("kind NOT IN ('CONTAINS','DEFINES','DOCUMENTS')")
         edges = self.db.all(
             "SELECT * FROM knowledge_edges WHERE " + " AND ".join(conditions) + " LIMIT ?",
             tuple(parameters + [max(limit * 5, limit)]),
@@ -440,6 +445,21 @@ class GraphService:
         public_nodes: list[dict[str, Any]] = []
         for node_id in used:
             node = node_map.get(node_id)
+            if node is None and node_id.startswith("module:"):
+                # Aggregated IDs intentionally refer to the corresponding module
+                # node, whose stable ID has the same shape. Keep the fallback for
+                # historical runs that used a different node ID digest.
+                parts = node_id.split(":", 2)
+                if len(parts) == 3:
+                    node = next(
+                        (
+                            item for item in node_map.values()
+                            if item.get("repository_id") == parts[1]
+                            and item.get("kind") == "module"
+                            and item.get("module_id") == parts[2]
+                        ),
+                        None,
+                    )
             if node:
                 public_nodes.append(node)
             elif node_id.startswith("repo:"):

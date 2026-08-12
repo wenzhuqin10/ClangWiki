@@ -16,7 +16,11 @@ EMBEDDING_PROFILES = {
     "bge-m3": {
         "model": "BAAI/bge-m3",
         "dimension": 1024,
-        "max_length": 2048,
+        # Retrieval chunks are intentionally capped below the model's theoretical
+        # maximum. Function/signature semantics are concentrated near the start,
+        # while 2048-token CPU inference causes excessive RAM and latency on
+        # medium repositories.
+        "max_length": 512,
         "backend": "onnx",
         "local_directory": "bge-m3",
         "description": "BGE-M3：面向中文工程知识、英文标识符与代码说明的本地 ONNX CPU 向量检索。",
@@ -39,6 +43,8 @@ EMBEDDING_PROFILES = {
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.M)
 IDENTIFIER_RE = re.compile(r"[A-Za-z_]\w*(?:::\w+)*")
+VECTOR_SELECTION_POLICY = "semantic-core-v1"
+DEFAULT_VECTOR_CODE_CHUNK_LIMIT = 800
 
 
 @dataclass(frozen=True)
@@ -75,7 +81,14 @@ class IndexService:
         if profile_name not in EMBEDDING_PROFILES:
             raise ValueError(f"未知 Embedding 配置档：{profile_name}")
         chunks = list(self._repository_chunks(repository))
-        return self._store_and_embed("repository", repository_id, chunks, profile_name)
+        code_limit = int(
+            repository["config"].get("vector_code_chunk_limit")
+            or DEFAULT_VECTOR_CODE_CHUNK_LIMIT
+        )
+        return self._store_and_embed(
+            "repository", repository_id, chunks, profile_name,
+            vector_code_chunk_limit=max(0, code_limit),
+        )
 
     def index_collection(self, collection_id: str, profile: str | None = None) -> dict[str, Any]:
         collection = self.registry.get_collection(collection_id)
@@ -195,13 +208,10 @@ class IndexService:
         )
         for node in nodes:
             yield self._symbol_chunk(node, root)
-        for edge in self.db.all(
-            "SELECT e.*,s.name AS source_name,t.name AS target_name FROM knowledge_edges e "
-            "LEFT JOIN knowledge_nodes s ON s.id=e.source_id LEFT JOIN knowledge_nodes t ON t.id=e.target_id "
-            "WHERE e.repository_id=? AND e.run_id=? AND e.kind IN ('CALLS','POSSIBLE_CALL','REFERENCES','INCLUDES')",
-            (repository_id, active_run_id),
-        ):
-            yield _edge_chunk(edge, repository_id, None)
+        # Relations remain searchable through the graph channel. Embedding every
+        # edge duplicates tens of thousands of tiny records in large baseband
+        # repositories and materially increases CPU/RAM without improving exact
+        # call-path retrieval.
 
     def _collection_chunks(self, collection_id: str) -> Iterator[ChunkRecord]:
         for document in self.db.all("SELECT * FROM documents WHERE collection_id=?", (collection_id,)):
@@ -228,9 +238,12 @@ class IndexService:
             lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
             start = max(1, int(node.get("line_start") or 1))
             end = min(len(lines), int(node.get("line_end") or start), start + 399)
-            source = "\n".join(lines[start - 1:end])
+            # Vector retrieval needs the semantic outline, not an entire long
+            # function body. Full text and exact locations remain available via
+            # SQLite FTS/symbol lookup and source:// navigation.
+            source = "\n".join(lines[start - 1:end])[:800]
         calls = self.db.all(
-            "SELECT t.name,e.kind FROM knowledge_edges e JOIN knowledge_nodes t ON t.id=e.target_id WHERE e.source_id=? LIMIT 100",
+            "SELECT t.name,e.kind FROM knowledge_edges e JOIN knowledge_nodes t ON t.id=e.target_id WHERE e.source_id=? LIMIT 24",
             (node["id"],),
         )
         called = ", ".join(f"{item['name']} ({item['kind']})" for item in calls)
@@ -244,10 +257,16 @@ class IndexService:
         return _chunk(node["repository_id"], None, None, node["id"], "code", name, content, source_uri, {
             "module_id": node.get("module_id"), "path": relative, "line_start": node.get("line_start"),
             "line_end": node.get("line_end"), "certainty": node.get("certainty"),
+            "symbol_kind": metadata.get("kind", "symbol"), "relation_count": len(calls),
         })
 
     def _store_and_embed(
-        self, scope_type: str, scope_id: str, chunks: list[ChunkRecord], profile: str,
+        self,
+        scope_type: str,
+        scope_id: str,
+        chunks: list[ChunkRecord],
+        profile: str,
+        vector_code_chunk_limit: int = DEFAULT_VECTOR_CODE_CHUNK_LIMIT,
     ) -> dict[str, Any]:
         now = time.time()
         field = "repository_id" if scope_type == "repository" else "collection_id"
@@ -273,14 +292,34 @@ class IndexService:
         root = self.registry.repository_root(scope_id) if scope_type == "repository" else self.registry.collection_root(scope_id)
         index_root = root / "index"
         index_root.mkdir(parents=True, exist_ok=True)
+        # Every chunk remains available through SQLite FTS and exact symbol
+        # lookup. Vectors cover all prose plus a bounded set of structurally
+        # important code symbols; graph expansion handles the remaining code.
+        vector_chunks = _select_vector_chunks(
+            list(incoming.values()), vector_code_chunk_limit,
+        )
+        previous_vector_manifest = _safe_json(index_root / "vector-manifest.json", {})
+        previous_keys = {int(value) for value in previous_vector_manifest.get("selected_keys", [])}
+        current_keys = {item.vector_key for item in vector_chunks}
+        changed_ids = {item.id for item in changed}
+        vector_changed = [
+            item for item in vector_chunks
+            if item.id in changed_ids or item.vector_key not in previous_keys
+        ]
+        vector_removed = [
+            {"vector_key": key} for key in sorted(previous_keys - current_keys)
+        ]
         vector = LocalVectorIndex(index_root, self.db.data_root / "models", profile)
         vector_result = vector.update(
-            all_chunks=list(incoming.values()), changed=changed, removed=removed,
+            all_chunks=vector_chunks, changed=vector_changed, removed=vector_removed,
         )
         manifest = {
             "scope_type": scope_type, "scope_id": scope_id, "profile": profile,
             "model": EMBEDDING_PROFILES[profile]["model"], "chunks": len(incoming),
             "changed": len(changed), "unchanged": unchanged, "removed": len(removed),
+            "vector_selection_policy": VECTOR_SELECTION_POLICY,
+            "vector_chunks": len(vector_chunks),
+            "vector_code_chunk_limit": vector_code_chunk_limit,
             "vector": vector_result, "updated_at": now,
         }
         (index_root / "index-manifest.json").write_text(json_dumps(manifest) + "\n", encoding="utf-8")
@@ -449,6 +488,7 @@ class LocalVectorIndex:
                 self.index_path.is_file()
                 and metadata.get("model") == self.model_info["model"]
                 and int(metadata.get("dimension") or 0) == int(self.model_info["dimension"])
+                and metadata.get("selection_policy") == VECTOR_SELECTION_POLICY
             )
             index = Index.restore(str(self.index_path), view=False) if compatible else Index(
                 ndim=int(self.model_info["dimension"]), metric="cos", dtype="f16",
@@ -462,15 +502,19 @@ class LocalVectorIndex:
                 values = changed
             else:
                 values = all_chunks
-            if values:
-                vectors = self._embed_passages(model, [item.content for item in values])
-                for item, vector in zip(values, vectors):
+            batch_size = 8 if self.model_info.get("backend") == "onnx" else 32
+            for start in range(0, len(values), batch_size):
+                batch = values[start:start + batch_size]
+                vectors = self._embed_passages(model, [item.content for item in batch])
+                for item, vector in zip(batch, vectors):
                     if item.vector_key in index:
                         index.remove(item.vector_key)
                     index.add(item.vector_key, vector)
             index.save(str(self.index_path))
             self.vector_manifest.write_text(json_dumps({
                 "model": self.model_info["model"], "dimension": self.model_info["dimension"],
+                "selection_policy": VECTOR_SELECTION_POLICY,
+                "selected_keys": [item.vector_key for item in all_chunks],
                 "count": len(all_chunks), "updated_at": time.time(),
             }) + "\n", encoding="utf-8")
             return {"available": True, "model": self.model_info["model"], "count": len(all_chunks), "incremental": compatible}
@@ -553,6 +597,35 @@ class LocalVectorIndex:
         vectors = outputs[1] if len(outputs) > 1 else outputs[0][:, 0, :]
         norms = np.linalg.norm(vectors, axis=1, keepdims=True)
         return list(vectors / np.maximum(norms, 1e-12))
+
+
+def _select_vector_chunks(
+    chunks: list[ChunkRecord], code_limit: int,
+) -> list[ChunkRecord]:
+    """Choose the semantic subset while preserving every chunk in FTS.
+
+    Prose has no reliable exact-name lookup, so it is always embedded. Code is
+    ranked by graph connectivity and declaration importance, then capped. The
+    policy is deterministic so unchanged repositories produce stable indexes.
+    """
+    prose = [item for item in chunks if item.kind != "code"]
+    code = [item for item in chunks if item.kind == "code"]
+    kind_priority = {
+        "struct": 5,
+        "class": 5,
+        "enum": 4,
+        "function": 3,
+        "method": 3,
+        "typedef": 2,
+        "macro": 1,
+    }
+    code.sort(key=lambda item: (
+        -int(item.metadata.get("relation_count") or 0),
+        -kind_priority.get(str(item.metadata.get("symbol_kind") or "").lower(), 0),
+        item.source_uri.casefold(),
+        item.title.casefold(),
+    ))
+    return prose + code[:max(0, code_limit)]
 
 
 def _document_chunks(document: dict[str, Any]) -> Iterator[ChunkRecord]:

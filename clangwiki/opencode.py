@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -20,14 +22,14 @@ class OpenCodeRunner:
 
     def command(self, context_file: Path, prompt: str | None = None) -> list[str]:
         executable = shutil.which(self.executable) or self.executable
-        command = [executable, "run", "--model", self.model, "--file", str(context_file)]
-        if self.agent:
-            command.extend(["--agent", self.agent])
-        command.append(prompt or (
-            "依据附件中的 ClangWiki 任务上下文生成文档。严格遵守其中的章节契约和证据分级，"
+        message = prompt or (
+            "Read the ClangWiki task context from standard input and generate the requested document. "
+            "严格遵守其中的章节契约和证据分级，"
             "不得改名、遗漏、合并或增加二级章节；证据不足时保留章节并明确说明。"
             "仅输出最终 Markdown 正文。"
-        ))
+        )
+        command = [executable, "run", message, "--model", self.model]
+        command.extend(["--agent", self.agent or "clangwiki-doc"])
         return command
 
     def generate(self, repository: Path, context_file: Path, stdout_log: Path, stderr_log: Path) -> str:
@@ -49,16 +51,58 @@ class OpenCodeRunner:
         if os.name == "nt":
             flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         try:
-            result = subprocess.run(self.command(context_file, prompt), cwd=repository, capture_output=True,
+            # Pass the generated context over stdin and keep cwd at the source
+            # repository. The task-specific agent has no tools, so it cannot read
+            # credentials or modify files; ClangWiki remains the sole writer.
+            context = context_file.read_text(encoding="utf-8")
+            environment = os.environ.copy()
+            if not self.agent or self.agent == "clangwiki-doc":
+                runtime_config = context_file.parent / ".clangwiki-opencode.json"
+                runtime_config.write_text(
+                    json.dumps(
+                        {
+                            "$schema": "https://opencode.ai/config.json",
+                            "agent": {
+                                "clangwiki-doc": {
+                                    "description": "Generate one document only from bounded ClangWiki evidence on stdin",
+                                    "mode": "primary",
+                                    "prompt": (
+                                        "You are ClangWiki's deterministic documentation writer. The complete task context "
+                                        "arrives on standard input. Do not call tools, inspect the repository, launch "
+                                        "subagents, or use network access. Produce only the requested final Markdown."
+                                    ),
+                                    "permission": {"*": "deny"},
+                                }
+                            },
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                environment["OPENCODE_CONFIG"] = str(runtime_config)
+            result = subprocess.run(self.command(context_file, prompt), cwd=repository, input=context, capture_output=True,
                 text=True, encoding="utf-8", errors="replace", timeout=self.timeout_seconds,
-                creationflags=flags, check=False)
+                creationflags=flags, check=False, env=environment)
         except subprocess.TimeoutExpired as exc:
             raise OpenCodeError(f"opencode run 在 {self.timeout_seconds} 秒内未完成。") from exc
         write_text(stdout_log, result.stdout)
         write_text(stderr_log, result.stderr)
         if result.returncode != 0:
-            raise OpenCodeError(f"opencode run 失败（退出码 {result.returncode}）。详见：{stderr_log}")
+            detail = _diagnostic_excerpt(result.stderr) or _diagnostic_excerpt(result.stdout)
+            suffix = f"\nOpenCode 输出：{detail}" if detail else ""
+            raise OpenCodeError(f"opencode run 失败（退出码 {result.returncode}）。日志：{stderr_log}{suffix}")
         output = result.stdout.strip()
         if not output:
-            raise OpenCodeError(f"opencode run 返回空输出。详见：{stderr_log}")
+            detail = _diagnostic_excerpt(result.stderr)
+            suffix = f"\nOpenCode 输出：{detail}" if detail else ""
+            raise OpenCodeError(f"opencode run 返回空输出。日志：{stderr_log}{suffix}")
         return output
+
+
+def _diagnostic_excerpt(value: str, limit: int = 1600) -> str:
+    """Return a bounded, single-line diagnostic suitable for the local task UI."""
+    without_ansi = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value)
+    cleaned = "\n".join(line.rstrip() for line in without_ansi.strip().splitlines() if line.strip())
+    return cleaned[:limit] + ("…" if len(cleaned) > limit else "")
