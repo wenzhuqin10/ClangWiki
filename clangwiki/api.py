@@ -158,11 +158,26 @@ def create_app(data_root: Path, web_root: Path | None = None) -> FastAPI:
         repositories = services.registry.list_repositories()
         collections = services.registry.list_collections()
         active_jobs = [item for item in services.jobs.list() if item["status"] in {"queued", "running"}]
+        default_model_row = services.database.one(
+            "SELECT value_json FROM settings WHERE key = ?", ("default_model",)
+        )
+        default_model = json_loads(default_model_row["value_json"], "") if default_model_row else ""
+        model_options = [default_model] if default_model else []
+        model_options.extend(
+            item.get("config", {}).get("model", "") for item in repositories
+        )
+        model_options.extend([
+            "zai/glm-5.1",
+            "deepseek/deepseek-v4-flash",
+            "opencode/deepseek-v4-flash-free",
+        ])
         return {
             "version": __version__, "data_root": str(services.database.data_root),
             "repositories": len(repositories), "collections": len(collections),
             "active_jobs": len(active_jobs), "opencode": shutil.which("opencode"),
             "vector_runtime": _vector_runtime_status(), "embedding_profiles": EMBEDDING_PROFILES,
+            "default_model": default_model,
+            "model_options": list(dict.fromkeys(item for item in model_options if item)),
         }
 
     @app.get("/api/repositories")
