@@ -19,6 +19,7 @@ from .errors import ClangWikiError
 from .graph import GRAPH_KINDS, GraphService
 from .indexing import EMBEDDING_PROFILES, IndexService
 from .jobs import PersistentJobManager
+from .models import normalize_module_generation_concurrency
 from .platform import CollectionGenerationService, PlatformGenerationService
 from .rag import RagService
 from .registry import Registry
@@ -231,7 +232,12 @@ def create_app(data_root: Path, web_root: Path | None = None) -> FastAPI:
     def generate_repository(repository_id: str, body: JobRequest) -> dict[str, Any]:
         _reject_secrets(body.overrides)
         services.registry.get_repository(repository_id)
-        return services.jobs.start("generate", "repository", repository_id, {"overrides": body.overrides})
+        overrides = dict(body.overrides)
+        if "module_generation_concurrency" in overrides:
+            overrides["module_generation_concurrency"] = normalize_module_generation_concurrency(
+                overrides["module_generation_concurrency"]
+            )
+        return services.jobs.start("generate", "repository", repository_id, {"overrides": overrides})
 
     @app.post("/api/repositories/{repository_id}/index", status_code=202)
     def index_repository(repository_id: str, body: JobRequest) -> dict[str, Any]:

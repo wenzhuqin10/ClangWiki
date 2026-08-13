@@ -10,6 +10,7 @@ from typing import Any
 
 from .database import Database, json_dumps, json_loads
 from .errors import ClangWikiError
+from .models import DEFAULT_MODULE_GENERATION_CONCURRENCY, normalize_module_generation_concurrency
 
 
 DEFAULT_REPOSITORY_CONFIG: dict[str, Any] = {
@@ -20,7 +21,7 @@ DEFAULT_REPOSITORY_CONFIG: dict[str, Any] = {
     "language": "简体中文",
     "timeout_seconds": 900,
     "max_source_chars_per_task": 36000,
-    "module_generation_concurrency": 2,
+    "module_generation_concurrency": DEFAULT_MODULE_GENERATION_CONCURRENCY,
     "channel_module_paths": [],
     "leaf_module_paths": [],
     "embedding_profile": "bge-m3",
@@ -239,15 +240,10 @@ class Registry:
 
 
 def _validate_repository_config(config: dict[str, Any]) -> None:
-    value = config.get("module_generation_concurrency", 2)
-    if isinstance(value, bool):
-        raise ClangWikiError("模块生成并发数必须是 1 到 4 之间的整数。")
-    try:
-        concurrency = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ClangWikiError("模块生成并发数必须是 1 到 4 之间的整数。") from exc
-    if not 1 <= concurrency <= 4:
-        raise ClangWikiError("模块生成并发数必须是 1 到 4 之间的整数。")
+    # Canonicalise string values from JSON/HTTP payloads before persisting them.
+    config["module_generation_concurrency"] = normalize_module_generation_concurrency(
+        config.get("module_generation_concurrency", DEFAULT_MODULE_GENERATION_CONCURRENCY)
+    )
 
 
 def git_identity(root: Path) -> tuple[str | None, str | None]:

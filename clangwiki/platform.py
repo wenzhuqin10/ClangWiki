@@ -14,7 +14,7 @@ from .document_schema import DOCUMENT_SCHEMAS
 from .errors import ClangWikiError
 from .graph import GraphService
 from .indexing import IndexService
-from .models import RunConfig
+from .models import RunConfig, normalize_module_generation_concurrency
 from .opencode import OpenCodeRunner
 from .output import validate_markdown
 from .pipeline import GenerationPipeline
@@ -54,6 +54,7 @@ class PlatformGenerationService:
         model = str(config.get("model") or "").strip()
         if not model:
             raise ClangWikiError("仓库未配置 OpenCode 模型标识。")
+        concurrency = _module_generation_concurrency(config.get("module_generation_concurrency"))
         source_root = Path(repository["path"])
         current_hashes = repository_file_hashes(source_root)
         config_hash = _hash_json(self._generation_config(config))
@@ -101,6 +102,7 @@ class PlatformGenerationService:
             "config_hash": config_hash,
             "schema_version": DOCUMENT_SCHEMA_VERSION,
             "embedding_profile": config.get("embedding_profile", "balanced"),
+            "module_generation_concurrency": concurrency,
         }
         now = time.time()
         self.db.execute(
@@ -124,7 +126,7 @@ class PlatformGenerationService:
                 timeout_seconds=int(config.get("timeout_seconds") or 900),
                 language=str(config.get("language") or "简体中文"),
                 max_source_chars_per_task=int(config.get("max_source_chars_per_task") or 36000),
-                module_generation_concurrency=_module_generation_concurrency(config.get("module_generation_concurrency")),
+                module_generation_concurrency=concurrency,
                 overwrite=True,
                 skip_cmake=bool(config.get("skip_cmake", False)),
                 skip_analysis=bool(config.get("skip_analysis", False)),
@@ -427,12 +429,6 @@ def _hash_json(value: Any) -> str:
 
 def _module_generation_concurrency(value: Any) -> int:
     """Validate the bounded local OpenCode fan-out for one repository run."""
-    if isinstance(value, bool):
-        raise ClangWikiError("模块生成并发数必须是 1 到 4 之间的整数。")
-    try:
-        concurrency = 2 if value is None or value == "" else int(value)
-    except (TypeError, ValueError) as exc:
-        raise ClangWikiError("模块生成并发数必须是 1 到 4 之间的整数。") from exc
-    if not 1 <= concurrency <= 4:
-        raise ClangWikiError("模块生成并发数必须是 1 到 4 之间的整数。")
-    return concurrency
+    # Keep this private compatibility wrapper for callers that imported the
+    # helper from platform before validation was centralised in models.py.
+    return normalize_module_generation_concurrency(value)

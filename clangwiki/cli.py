@@ -10,7 +10,7 @@ from typing import Any
 from . import __version__
 from .api import build_services
 from .errors import ClangWikiError
-from .models import RunConfig
+from .models import RunConfig, normalize_module_generation_concurrency
 from .pipeline import GenerationPipeline
 
 
@@ -182,7 +182,7 @@ def _legacy_generate(args: argparse.Namespace) -> dict[str, Any]:
         timeout_seconds=args.timeout_seconds or 900,
         language=args.language or "简体中文",
         max_source_chars_per_task=args.max_source_chars_per_task or 36000,
-        module_generation_concurrency=args.module_generation_concurrency or 2,
+        module_generation_concurrency=normalize_module_generation_concurrency(args.module_generation_concurrency),
         overwrite=args.overwrite,
         skip_cmake=args.skip_cmake,
         skip_analysis=args.skip_analysis,

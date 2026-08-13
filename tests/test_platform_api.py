@@ -200,6 +200,36 @@ def test_repository_persists_module_generation_concurrency(tmp_path: Path) -> No
     assert invalid.status_code == 400
     assert "1 到 4" in invalid.json()["detail"]
 
+    # Generation overrides are validated when the job is submitted.  The
+    # caller should never receive a queued job that is guaranteed to fail
+    # later in a worker thread.
+    invalid_job = client.post(
+        f"/api/repositories/{repository.json()['id']}/generate",
+        json={"overrides": {"module_generation_concurrency": 0}},
+    )
+    assert invalid_job.status_code == 400
+    assert "1 到 4" in invalid_job.json()["detail"]
+
+
+def test_concurrency_normalizes_string_and_rejects_fractional_values(tmp_path: Path) -> None:
+    app = create_app(tmp_path / "data")
+    client = TestClient(app)
+    repository_root = _repository(tmp_path)
+
+    repository = client.post(
+        "/api/repositories",
+        json={"path": str(repository_root), "config": {"module_generation_concurrency": "3"}},
+    )
+    assert repository.status_code == 201
+    assert repository.json()["config"]["module_generation_concurrency"] == 3
+
+    fractional = client.patch(
+        f"/api/repositories/{repository.json()['id']}",
+        json={"config": {"module_generation_concurrency": 2.5}},
+    )
+    assert fractional.status_code == 400
+    assert "1 到 4" in fractional.json()["detail"]
+
 
 def test_unchanged_generation_reuses_snapshot_and_restores_ready_status(tmp_path: Path) -> None:
     app = create_app(tmp_path / "data")

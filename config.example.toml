@@ -11,5 +11,7 @@ timeout_seconds = 900
 [generation]
 language = "简体中文"
 max_source_chars_per_task = 36000
+# Number of independent leaf-module `opencode run` calls per repository run.
+# Valid range: 1-4. Parent summaries stay dependency-ordered.
+module_generation_concurrency = 2
 overwrite = false
-

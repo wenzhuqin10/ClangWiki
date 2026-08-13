@@ -4,6 +4,36 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .errors import ClangWikiError
+
+
+DEFAULT_MODULE_GENERATION_CONCURRENCY = 2
+MIN_MODULE_GENERATION_CONCURRENCY = 1
+MAX_MODULE_GENERATION_CONCURRENCY = 4
+MODULE_GENERATION_CONCURRENCY_ERROR = "模块生成并发数必须是 1 到 4 之间的整数。"
+
+
+def normalize_module_generation_concurrency(value: Any) -> int:
+    """Return one validated fan-out value for every configuration entry point.
+
+    The setting controls only independent leaf-module ``opencode run`` calls.
+    Keeping the validation here prevents the CLI, HTTP API, persisted config and
+    direct ``RunConfig`` users from silently applying different rules.
+    """
+    if value is None or value == "":
+        return DEFAULT_MODULE_GENERATION_CONCURRENCY
+    if isinstance(value, bool):
+        raise ClangWikiError(MODULE_GENERATION_CONCURRENCY_ERROR)
+    if isinstance(value, float) and not value.is_integer():
+        raise ClangWikiError(MODULE_GENERATION_CONCURRENCY_ERROR)
+    try:
+        concurrency = int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ClangWikiError(MODULE_GENERATION_CONCURRENCY_ERROR) from exc
+    if not MIN_MODULE_GENERATION_CONCURRENCY <= concurrency <= MAX_MODULE_GENERATION_CONCURRENCY:
+        raise ClangWikiError(MODULE_GENERATION_CONCURRENCY_ERROR)
+    return concurrency
+
 
 @dataclass(frozen=True)
 class RunConfig:
@@ -25,6 +55,15 @@ class RunConfig:
     module_ids: tuple[str, ...] = ()
     leaf_module_paths: tuple[str, ...] = ()
     channel_module_paths: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        # RunConfig is also used by the legacy one-shot CLI, so it must enforce
+        # the same bounds as the persisted repository configuration.
+        object.__setattr__(
+            self,
+            "module_generation_concurrency",
+            normalize_module_generation_concurrency(self.module_generation_concurrency),
+        )
 
 
 @dataclass

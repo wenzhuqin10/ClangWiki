@@ -16,7 +16,7 @@ from .context import build_context
 from .errors import CMakeError, ClangWikiError, CompilationDatabaseError, GenerationCancelled
 from .io import read_json, write_json, write_text
 from .knowledge import build_knowledge
-from .models import AnalysisBundle, RunConfig
+from .models import AnalysisBundle, RunConfig, normalize_module_generation_concurrency
 from .opencode import OpenCodeRunner
 from .output import validate_markdown, write_document
 from .planner import plan_documents
@@ -154,7 +154,14 @@ class GenerationPipeline:
 
         leaf_tasks = [task for task in tasks if task.hierarchy_role == "leaf"]
         aggregate_tasks = [task for task in tasks if task.hierarchy_role != "leaf"]
-        concurrency = min(self.config.module_generation_concurrency, len(leaf_tasks))
+        configured_concurrency = normalize_module_generation_concurrency(self.config.module_generation_concurrency)
+        concurrency = min(configured_concurrency, len(leaf_tasks)) if leaf_tasks else 0
+        if leaf_tasks:
+            self._emit(
+                "parallel",
+                f"叶子模块生成并发上限为 {configured_concurrency}，本次实际并发 {concurrency}（共 {len(leaf_tasks)} 个）",
+                42,
+            )
         if concurrency > 1:
             self._emit("parallel", f"正在并发生成 {len(leaf_tasks)} 个叶子模块（并发数 {concurrency}）", 42)
             with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="clangwiki-module") as executor:
