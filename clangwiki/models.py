@@ -17,6 +17,7 @@ class RunConfig:
     timeout_seconds: int = 900
     language: str = "简体中文"
     max_source_chars_per_task: int = 36000
+    module_generation_concurrency: int = 2
     overwrite: bool = False
     skip_cmake: bool = False
     skip_analysis: bool = False

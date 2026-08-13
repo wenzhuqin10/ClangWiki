@@ -377,6 +377,11 @@ code, .mono { font-family: var(--mono); }
 .form input:not([type="checkbox"]), .form textarea, .form select { width: 100%; resize: vertical; border: 1px solid var(--line-2); border-radius: 7px; outline: none; background: #fff; padding: 8px 10px; font-size: 11px; }
 .form input:focus, .form textarea:focus, .form select:focus { border-color: rgba(89,101,216,.55); box-shadow: 0 0 0 3px var(--accent-soft); }
 .form label small { display: block; margin-top: 4px; color: var(--faint); font-size: 8.5px; }
+.inline-setting { display: grid; grid-template-columns: 96px minmax(0, 1fr); align-items: center; gap: 8px 10px; margin-top: 13px; padding-top: 12px; border-top: 1px solid var(--line); }
+.inline-setting > span { color: var(--text-2); font-size: 10.5px; font-weight: 650; }
+.inline-setting select { width: 100%; border: 1px solid var(--line-2); border-radius: 7px; outline: none; background: #fff; padding: 7px 9px; font-size: 11px; }
+.inline-setting select:focus { border-color: rgba(89,101,216,.55); box-shadow: 0 0 0 3px var(--accent-soft); }
+.inline-setting small { grid-column: 2; color: var(--faint); font-size: 8.5px; line-height: 1.5; }
 .form textarea.editor { font-family: var(--mono); font-size: 10.5px; }
 .form fieldset { display: grid; gap: 4px; border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
 .check-row { display: flex; align-items: center; gap: 7px; border-radius: 6px; padding: 5px; }

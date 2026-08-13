@@ -57,7 +57,10 @@ class OpenCodeRunner:
             context = context_file.read_text(encoding="utf-8")
             environment = os.environ.copy()
             if not self.agent or self.agent == "clangwiki-doc":
-                runtime_config = context_file.parent / ".clangwiki-opencode.json"
+                # Every document task gets its own temporary OpenCode config.
+                # Leaf tasks may run concurrently, so a shared config filename
+                # would introduce a needless write race in the task directory.
+                runtime_config = context_file.with_suffix(".opencode.json")
                 runtime_config.write_text(
                     json.dumps(
                         {

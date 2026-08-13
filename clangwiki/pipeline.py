@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable
 
@@ -33,6 +34,7 @@ class GenerationPipeline:
         self.analyzer_executable = analyzer_executable
         self.progress_sink = progress_sink
         self.cancel_event = cancel_event
+        self._log_lock = threading.Lock()
 
     def _emit(self, stage: str, message: str, progress: int | None = None) -> None:
         if self.progress_sink is not None:
@@ -83,42 +85,94 @@ class GenerationPipeline:
         self._log(log, f"[PLAN] {len(tasks)} document tasks")
         self._emit("plan", f"文档计划已生成：共 {len(tasks)} 个任务", 42)
         runner = OpenCodeRunner(cfg.opencode_executable, cfg.model, cfg.agent, cfg.timeout_seconds)
-        generated: list[Path] = []
-        document_span = 52
-        for index, task in enumerate(tasks, start=1):
-            self._check_cancelled()
-            context_file = workspace / "tasks" / "contexts" / f"{task.task_id}.md"
-            build_context(
-                task,
-                repo,
-                modules,
-                analysis,
-                context_file,
-                cfg.language,
-                cfg.max_source_chars_per_task,
-                cfg.output,
-            )
-            self._log(log, f"[CONTEXT] {context_file.name}")
-            start_progress = 42 + int((index - 1) / max(1, len(tasks)) * document_span)
-            end_progress = 42 + int(index / max(1, len(tasks)) * document_span)
-            self._emit("context", f"正在整理上下文（{index}/{len(tasks)}）：{task.title}", start_progress)
-            stdout_log = workspace / "logs" / "opencode" / f"{task.task_id}.stdout.txt"
-            stderr_log = workspace / "logs" / "opencode" / f"{task.task_id}.stderr.txt"
-            try:
-                self._emit("opencode", f"正在调用 OpenCode 生成（{index}/{len(tasks)}）：{task.title}", min(end_progress - 2, start_progress + 1))
-                markdown = runner.generate(repo, context_file, stdout_log, stderr_log)
-                self._emit("validate", f"正在校验 Markdown（{index}/{len(tasks)}）：{task.title}", max(start_progress, end_progress - 1))
-                validate_markdown(markdown, task.document_type)
-                destination = write_document(cfg.output, task.output_relative_path, markdown, cfg.overwrite)
-            except ClangWikiError as exc:
-                self._log(log, f"[FAILED] {task.task_id}; logs: {stdout_log}, {stderr_log}")
-                raise type(exc)(f"文档任务“{task.title}”失败：{exc}") from exc
-            generated.append(destination)
-            self._log(log, f"[OUTPUT] {destination}")
-            self._emit("document", f"已生成（{index}/{len(tasks)}）：{task.title}", end_progress)
+        generated = self._generate_documents(
+            tasks, runner, repo, workspace, modules, analysis, log,
+        )
         self._log(log, "[DONE] ClangWiki pipeline completed")
         self._emit("documents", f"模块 Wiki 已生成：共 {len(generated)} 篇文档", 94)
         return generated
+
+    def _generate_documents(
+        self,
+        tasks: list,
+        runner: OpenCodeRunner,
+        repo: Path,
+        workspace: Path,
+        modules: dict,
+        analysis: AnalysisBundle,
+        log: Path,
+    ) -> list[Path]:
+        """Generate independent leaf documents concurrently, then aggregate serially.
+
+        Parent/module summary tasks consume their child Markdown through
+        ``build_context``. They therefore remain after the leaf barrier, as do
+        repository-wide documents such as Architecture and README. This keeps
+        the bottom-up Wiki contract deterministic while reducing the time spent
+        waiting for independent ``opencode run`` calls.
+        """
+        total = len(tasks)
+        if not total:
+            return []
+        document_span = 52
+        completed = 0
+        completed_lock = threading.Lock()
+        destinations: dict[str, Path] = {}
+
+        def progress(value: int) -> int:
+            return 42 + int(value / total * document_span)
+
+        def generate_task(task) -> tuple[str, Path]:
+            nonlocal completed
+            self._check_cancelled()
+            with completed_lock:
+                current = completed
+            self._emit("context", f"正在整理上下文（{current + 1}/{total}）：{task.title}", progress(current))
+            context_file = workspace / "tasks" / "contexts" / f"{task.task_id}.md"
+            build_context(
+                task, repo, modules, analysis, context_file, self.config.language,
+                self.config.max_source_chars_per_task, self.config.output,
+            )
+            self._log(log, f"[CONTEXT] {context_file.name}")
+            stdout_log = workspace / "logs" / "opencode" / f"{task.task_id}.stdout.txt"
+            stderr_log = workspace / "logs" / "opencode" / f"{task.task_id}.stderr.txt"
+            try:
+                self._emit("opencode", f"正在调用 OpenCode 生成：{task.title}", progress(current))
+                markdown = runner.generate(repo, context_file, stdout_log, stderr_log)
+                self._check_cancelled()
+                self._emit("validate", f"正在校验 Markdown：{task.title}", progress(current))
+                validate_markdown(markdown, task.document_type)
+                destination = write_document(self.config.output, task.output_relative_path, markdown, self.config.overwrite)
+            except ClangWikiError as exc:
+                self._log(log, f"[FAILED] {task.task_id}; logs: {stdout_log}, {stderr_log}")
+                raise type(exc)(f"文档任务“{task.title}”失败：{exc}") from exc
+            with completed_lock:
+                completed += 1
+                done = completed
+            self._log(log, f"[OUTPUT] {destination}")
+            self._emit("document", f"已生成（{done}/{total}）：{task.title}", progress(done))
+            return task.task_id, destination
+
+        leaf_tasks = [task for task in tasks if task.hierarchy_role == "leaf"]
+        aggregate_tasks = [task for task in tasks if task.hierarchy_role != "leaf"]
+        concurrency = min(self.config.module_generation_concurrency, len(leaf_tasks))
+        if concurrency > 1:
+            self._emit("parallel", f"正在并发生成 {len(leaf_tasks)} 个叶子模块（并发数 {concurrency}）", 42)
+            with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="clangwiki-module") as executor:
+                futures = {executor.submit(generate_task, task): task for task in leaf_tasks}
+                for future in as_completed(futures):
+                    task_id, destination = future.result()
+                    destinations[task_id] = destination
+        else:
+            for task in leaf_tasks:
+                task_id, destination = generate_task(task)
+                destinations[task_id] = destination
+
+        # Child document excerpts are now available; preserve task planner order
+        # for parent summaries and repository-wide synthesis.
+        for task in aggregate_tasks:
+            task_id, destination = generate_task(task)
+            destinations[task_id] = destination
+        return [destinations[task.task_id] for task in tasks]
 
     def _compilation_database(self, repo: Path) -> tuple[Path, str | None]:
         build_dir = self.config.build_dir.expanduser().resolve()
@@ -141,8 +195,8 @@ class GenerationPipeline:
             )
         return ClangAnalyzer(self.analyzer_executable).analyze(repo, compilation_database, artifact_dir)
 
-    @staticmethod
-    def _log(path: Path, line: str) -> None:
+    def _log(self, path: Path, line: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8", newline="\n") as stream:
-            stream.write(line + "\n")
+        with self._log_lock:
+            with path.open("a", encoding="utf-8", newline="\n") as stream:
+                stream.write(line + "\n")

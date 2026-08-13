@@ -126,6 +126,10 @@ def _repository_config_arguments(parser: argparse.ArgumentParser, require_model:
     parser.add_argument("--timeout-seconds", type=int)
     parser.add_argument("--language")
     parser.add_argument("--max-source-chars-per-task", type=int)
+    parser.add_argument(
+        "--module-generation-concurrency", type=int,
+        help="同层模块文档的 OpenCode 并发数（1-4，默认 2）",
+    )
     parser.add_argument("--channel-module-path", action="append", default=[])
     parser.add_argument("--leaf-module-path", action="append", default=[])
     parser.add_argument("--embedding-profile", choices=["balanced", "quality"])
@@ -142,6 +146,7 @@ def _config_from_args(args: argparse.Namespace) -> dict[str, Any]:
         "model": "model", "agent": "agent", "opencode_executable": "opencode_executable",
         "analyzer_executable": "analyzer_executable", "timeout_seconds": "timeout_seconds",
         "language": "language", "max_source_chars_per_task": "max_source_chars_per_task",
+        "module_generation_concurrency": "module_generation_concurrency",
         "embedding_profile": "embedding_profile",
     }
     values = {target: getattr(args, source) for source, target in mapping.items() if hasattr(args, source) and getattr(args, source) is not None}
@@ -177,6 +182,7 @@ def _legacy_generate(args: argparse.Namespace) -> dict[str, Any]:
         timeout_seconds=args.timeout_seconds or 900,
         language=args.language or "简体中文",
         max_source_chars_per_task=args.max_source_chars_per_task or 36000,
+        module_generation_concurrency=args.module_generation_concurrency or 2,
         overwrite=args.overwrite,
         skip_cmake=args.skip_cmake,
         skip_analysis=args.skip_analysis,

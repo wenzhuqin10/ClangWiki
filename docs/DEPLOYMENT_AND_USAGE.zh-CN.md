@@ -93,6 +93,17 @@ opencode run --model "provider/glm-5.1" "只回复 GLM_READY"
 
 `provider/glm-5.1` 只是示例，必须以本机 `opencode models` 输出为准。企业使用兼容启动器时可将仓库配置中的 `opencode_executable` 设置为例如 `nga`，但必须兼容 `run <prompt> --model <model> --agent <agent>` 参数，并能从标准输入读取任务上下文。
 
+### 模块生成并发数
+
+仓库配置 `module_generation_concurrency` 控制一个仓库生成批次中同时运行的叶子模块 OpenCode 任务，允许范围为 `1–4`，默认值为 `2`：
+
+```powershell
+clangwiki --data-root "D:\clangwiki-data" repo update "repo-..." `
+  --module-generation-concurrency 2
+```
+
+也可以在工作台的“代码仓 → 生成与环境”中选择。仅独立叶子模块并发；父级模块、架构文档和首页会等待其依赖文档完成。该项是性能设置，调整后不会使现有 Wiki 快照失效。
+
 建议使用只读 `clangwiki-doc` Agent：
 
 ```text

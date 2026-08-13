@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from clangwiki.api import create_app
 from clangwiki.graph import GraphService
-from clangwiki.platform import PlatformGenerationService, _hash_json, repository_file_hashes
+from clangwiki.platform import PlatformGenerationService, _hash_json, _module_generation_concurrency, repository_file_hashes
 
 
 def _repository(path: Path, name: str = "demo") -> Path:
@@ -164,6 +164,41 @@ def test_generation_config_hash_is_stable_across_cli_and_api_defaults() -> None:
     assert canonical_api["only"] is None
     assert canonical_api["skip_cmake"] is False
     assert canonical_api["skip_analysis"] is False
+    # Concurrency changes execution speed, not generated content, so it is
+    # intentionally outside the snapshot hash.
+    assert "module_generation_concurrency" not in canonical_api
+    assert _module_generation_concurrency(repository_config.get("module_generation_concurrency")) == 2
+
+
+def test_module_generation_concurrency_is_bounded() -> None:
+    assert _module_generation_concurrency(None) == 2
+    assert _module_generation_concurrency(1) == 1
+    assert _module_generation_concurrency("4") == 4
+    for value in (0, 5, "fast", True):
+        try:
+            _module_generation_concurrency(value)
+        except Exception:
+            pass
+        else:
+            raise AssertionError(f"expected invalid concurrency for {value!r}")
+
+
+def test_repository_persists_module_generation_concurrency(tmp_path: Path) -> None:
+    app = create_app(tmp_path / "data")
+    client = TestClient(app)
+    repository = client.post("/api/repositories", json={
+        "path": str(_repository(tmp_path)),
+        "config": {"module_generation_concurrency": 3},
+    })
+    assert repository.status_code == 201
+    assert repository.json()["config"]["module_generation_concurrency"] == 3
+
+    invalid = client.patch(
+        f"/api/repositories/{repository.json()['id']}",
+        json={"config": {"module_generation_concurrency": 5}},
+    )
+    assert invalid.status_code == 400
+    assert "1 到 4" in invalid.json()["detail"]
 
 
 def test_unchanged_generation_reuses_snapshot_and_restores_ready_status(tmp_path: Path) -> None:

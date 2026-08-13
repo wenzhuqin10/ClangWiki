@@ -22,6 +22,7 @@ ClangWiki 是一个面向通信基带等大型 C/C++ 代码仓的**本机单用�
 - 生成快照不可直接修改；人工知识页、批注、标签和版本历史独立保存并统一检索。
 - 混合检索：精确符号、SQLite FTS5、默认 BGE-M3 ONNX + USearch 向量、图关系扩展和 RRF 融合。
 - RAG 问答：每轮重新检索，短会话，回答必须携带可验证的 Wiki、源码、图谱或人工知识引用。
+- 受限模块并发：同层叶子模块可并发调用 `opencode run`；父级与仓库级文档仍按依赖顺序汇聚。
 - FastAPI + React 本地工作台，中文界面、深色左栏/浅色内容区；仅监听 `127.0.0.1`。
 - Windows 离线部署：运行时不需要 Node.js、Docker、Ollama、Neo4j 或外部向量数据库。
 
@@ -35,6 +36,7 @@ clangwiki --data-root "D:\clangwiki-data" repo add "D:\projects\pdsch-channel" `
   --name "PDSCH 信道仓" `
   --model "provider/glm-5.1" `
   --analyzer-executable "D:\ClangWiki\bin\clangwiki-analyzer.exe" `
+  --module-generation-concurrency 2 `
   --channel-module-path "src/phy/pdsch"
 
 # 启动本机中文工作台
@@ -69,6 +71,20 @@ src/phy/pdsch
 ```
 
 框架先产生叶子文档，再汇聚为 PDSCH、PHY 和仓库级文档。叶子文档严格采用面向基带开发的章节规范：定位与边界、领域约束、接口、任务流程、状态与时序、核心实现、配置、调试、开发导航、证据限制。
+
+## 模块生成并发
+
+`module_generation_concurrency` 控制单个仓库一次生成中，同时运行的**叶子模块** OpenCode 任务数，允许范围为 `1–4`，默认 `2`。它是性能设置，不改变文档事实或章节模板；因此单独调整它不会使已有快照失效。
+
+```text
+叶子模块 A ─┐
+叶子模块 B ─┼─ 最多 N 个并行 opencode run
+叶子模块 C ─┘
+                 ↓ 全部完成
+父级模块汇总 → 架构文档 / README
+```
+
+父级汇总会读取直接子文档，所以必须等待其子模块完成；系统架构、首页和仓库级文档同样按依赖顺序生成。建议先使用默认值 `2`；只有确认企业 OpenCode 与模型额度支持时再调高至 `3` 或 `4`。
 
 ## 文档
 

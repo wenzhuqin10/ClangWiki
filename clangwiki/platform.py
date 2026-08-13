@@ -124,6 +124,7 @@ class PlatformGenerationService:
                 timeout_seconds=int(config.get("timeout_seconds") or 900),
                 language=str(config.get("language") or "简体中文"),
                 max_source_chars_per_task=int(config.get("max_source_chars_per_task") or 36000),
+                module_generation_concurrency=_module_generation_concurrency(config.get("module_generation_concurrency")),
                 overwrite=True,
                 skip_cmake=bool(config.get("skip_cmake", False)),
                 skip_analysis=bool(config.get("skip_analysis", False)),
@@ -422,3 +423,16 @@ def _file_hash(path: Path) -> str:
 
 def _hash_json(value: Any) -> str:
     return hashlib.sha256(json_dumps(value).encode("utf-8")).hexdigest()
+
+
+def _module_generation_concurrency(value: Any) -> int:
+    """Validate the bounded local OpenCode fan-out for one repository run."""
+    if isinstance(value, bool):
+        raise ClangWikiError("模块生成并发数必须是 1 到 4 之间的整数。")
+    try:
+        concurrency = 2 if value is None or value == "" else int(value)
+    except (TypeError, ValueError) as exc:
+        raise ClangWikiError("模块生成并发数必须是 1 到 4 之间的整数。") from exc
+    if not 1 <= concurrency <= 4:
+        raise ClangWikiError("模块生成并发数必须是 1 到 4 之间的整数。")
+    return concurrency

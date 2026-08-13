@@ -20,6 +20,7 @@ DEFAULT_REPOSITORY_CONFIG: dict[str, Any] = {
     "language": "简体中文",
     "timeout_seconds": 900,
     "max_source_chars_per_task": 36000,
+    "module_generation_concurrency": 2,
     "channel_module_paths": [],
     "leaf_module_paths": [],
     "embedding_profile": "bge-m3",
@@ -63,6 +64,7 @@ class Registry:
         if default_embedding:
             inherited["embedding_profile"] = default_embedding
         merged = {**DEFAULT_REPOSITORY_CONFIG, **inherited, **(config or {})}
+        _validate_repository_config(merged)
         self.db.execute(
             "INSERT INTO repositories(id,name,path,config_json,status,git_branch,git_commit,created_at,updated_at) "
             "VALUES(?,?,?,?,?,?,?,?,?)",
@@ -89,6 +91,7 @@ class Registry:
         config = dict(current["config"])
         if isinstance(values.get("config"), dict):
             config.update(values["config"])
+        _validate_repository_config(config)
         name = str(values.get("name") or current["name"]).strip()
         self.db.execute(
             "UPDATE repositories SET name=?, config_json=?, updated_at=? WHERE id=?",
@@ -233,6 +236,18 @@ class Registry:
     def _stable_id(prefix: str, value: str) -> str:
         digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
         return f"{prefix}-{digest}"
+
+
+def _validate_repository_config(config: dict[str, Any]) -> None:
+    value = config.get("module_generation_concurrency", 2)
+    if isinstance(value, bool):
+        raise ClangWikiError("模块生成并发数必须是 1 到 4 之间的整数。")
+    try:
+        concurrency = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ClangWikiError("模块生成并发数必须是 1 到 4 之间的整数。") from exc
+    if not 1 <= concurrency <= 4:
+        raise ClangWikiError("模块生成并发数必须是 1 到 4 之间的整数。")
 
 
 def git_identity(root: Path) -> tuple[str | None, str | None]:
