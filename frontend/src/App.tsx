@@ -174,11 +174,99 @@ function Wiki({ scope, onManual, notify }: { scope: Scope; onManual: () => void;
 }
 
 function Graph({ scope, notify }: { scope: Scope; notify: Function }) {
-  const [level, setLevel] = useState("module"); const [certainty, setCertainty] = useState(""); const [graph, setGraph] = useState<any>({ nodes: [], edges: [] }); const [selected, setSelected] = useState<any>(null); const [loading, setLoading] = useState(false);
-  const load = useCallback(async () => { if (!scope) return; setLoading(true); try { setGraph(await api.get(`/api/graph?${query({ scope_type: scope.type, scope_id: scope.id, level, certainty, limit: 1800 })}`)); } catch (e) { notify(message(e), true); } finally { setLoading(false); } }, [scope?.type, scope?.id, level, certainty]);
+  const [level, setLevel] = useState<"repository" | "module" | "file" | "symbol">("module");
+  const [certainty, setCertainty] = useState("");
+  const [graph, setGraph] = useState<any>({ nodes: [], edges: [] });
+  const [selected, setSelected] = useState<any>(null);
+  const [selectedEdge, setSelectedEdge] = useState<any>(null);
+  const [neighbors, setNeighbors] = useState<any>(null);
+  const [neighborhoodMode, setNeighborhoodMode] = useState(false);
+  const [neighborLoading, setNeighborLoading] = useState(false);
+  const [showLabels, setShowLabels] = useState(true);
+  const [showEdgeLabels, setShowEdgeLabels] = useState(true);
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!scope) return;
+    setLoading(true);
+    setNeighborhoodMode(false);
+    // File and symbol graphs can contain hundreds of nodes.  Keep the graph
+    // readable on first load while leaving both label channels available from
+    // the toolbar when a user needs exact names.
+    setShowLabels(level === "repository" || level === "module");
+    setShowEdgeLabels(level === "repository" || level === "module");
+    try {
+      setGraph(await api.get(`/api/graph?${query({ scope_type: scope.type, scope_id: scope.id, level, certainty, limit: level === "symbol" ? 650 : 1200 })}`));
+      setSelected(null);
+      setSelectedEdge(null);
+      setNeighbors(null);
+    } catch (e) { notify(message(e), true); } finally { setLoading(false); }
+  }, [scope?.type, scope?.id, level, certainty]);
+
   useEffect(() => { load(); }, [load]);
+
+  const loadNeighbors = useCallback(async (nodeId: string) => {
+    setNeighborLoading(true);
+    try {
+      const value = await api.get<any>(`/api/graph/neighbors?${query({ node_id: nodeId, depth: 1, limit: 180, scope_type: scope?.type, scope_id: scope?.id, level })}`);
+      setNeighbors(value);
+      return value;
+    } catch (e) { notify(message(e), true); return null; } finally { setNeighborLoading(false); }
+  }, [notify]);
+
+  const chooseNode = useCallback((node: any | null) => {
+    setSelected(node);
+    setSelectedEdge(null);
+    if (node) void loadNeighbors(node.id);
+    else setNeighbors(null);
+  }, [loadNeighbors]);
+
+  const expandNeighbors = async () => {
+    if (!selected) return;
+    const value = neighbors || await loadNeighbors(selected.id);
+    if (!value) return;
+    setGraph({ nodes: value.nodes || [], edges: value.edges || [], truncated: value.truncated, relation_counts: value.relation_counts });
+    setNeighborhoodMode(true);
+  };
+
+  const graphNodes = useMemo(() => [...(graph.nodes || []), ...((neighbors?.nodes || []).filter((node: any) => !(graph.nodes || []).some((item: any) => item.id === node.id)))], [graph.nodes, neighbors?.nodes]);
+  const nodeById = useMemo(() => new Map(graphNodes.map((node: any) => [node.id, node])), [graphNodes]);
+  const relatedNodes = (neighbors?.nodes || []).filter((node: any) => node.id !== selected?.id);
+  const relationLabel = (edge: any) => edge.relation_label || ({ CONTAINS: "包含", DEPENDS_ON: "依赖", INCLUDES: "包含头文件", CALLS: "调用", POSSIBLE_CALL: "可能调用", REFERENCES: "引用", DEFINES: "定义", DOCUMENTS: "文档对应", RELATED_TO: "相关" } as Record<string, string>)[edge.kind] || edge.kind || "关系";
+
   if (!scope) return <ScopeEmpty />;
-  return <section className="graph-layout"><div className="graph-card"><div className="graph-controls"><div className="segmented">{["repository", "module", "file", "symbol"].map((item) => <button className={level === item ? "active" : ""} key={item} onClick={() => setLevel(item)}>{({ repository: "仓库", module: "模块", file: "文件", symbol: "符号" } as any)[item]}</button>)}</div><select value={certainty} onChange={(e) => setCertainty(e.target.value)}><option value="">全部确定性</option><option value="compiler">编译器确认</option><option value="candidate">候选关系</option><option value="user-confirmed">人工确认</option></select><button className="icon-button" onClick={load}><RefreshCw className={loading ? "spin" : ""} size={16} /></button><div className="graph-legend"><span><i className="compiler" />确定关系</span><span><i className="candidate" />候选关系</span></div></div><GraphCanvas graph={graph} onSelect={setSelected} /></div><aside className={`inspector ${selected ? "open" : ""}`}>{selected ? <><div className="inspector-head"><span className={`kind-icon ${selected.kind}`}><Code2 /></span><button className="icon-button" onClick={() => setSelected(null)}><X size={15} /></button></div><span className="eyebrow">{selected.kind?.toUpperCase()}</span><h3>{selected.name || selected.label}</h3><p className="mono break">{selected.qualified_name || selected.path || selected.id}</p><DescriptionList rows={[["仓库", selected.repository_id || "—"], ["模块", selected.module_id || "—"], ["证据等级", selected.certainty || "compiler"], ["起始行", selected.line_start || "—"]]} /><button className="button subtle full"><Network size={15} />展开一跳邻居</button></> : <Empty icon={<PanelLeftClose />} title="节点详情" text="点击图中的节点查看源码位置与关系。" />}</aside></section>;
+  const activeItem = selected || selectedEdge;
+  return <section className="graph-layout">
+    <div className="graph-card">
+      <div className="graph-controls">
+        <div className="segmented">{["repository", "module", "file", "symbol"].map((item) => <button className={level === item ? "active" : ""} key={item} onClick={() => { setLevel(item as any); setNeighborhoodMode(false); }}>{({ repository: "仓库", module: "模块", file: "文件", symbol: "符号" } as any)[item]}</button>)}</div>
+        <select value={certainty} onChange={(e) => setCertainty(e.target.value)}><option value="">全部确定性</option><option value="compiler">编译器确认</option><option value="candidate">候选关系</option><option value="user-confirmed">人工确认</option></select>
+        <button className="icon-button" title="刷新图谱" onClick={load}><RefreshCw className={loading ? "spin" : ""} size={16} /></button>
+        <button className={`graph-toggle ${showLabels ? "active" : ""}`} onClick={() => setShowLabels((value) => !value)}>节点文字</button>
+        <button className={`graph-toggle ${showEdgeLabels ? "active" : ""}`} onClick={() => setShowEdgeLabels((value) => !value)}>关系文字</button>
+        {neighborhoodMode && <button className="button subtle small" onClick={load}>返回全图</button>}
+        <div className="graph-summary"><strong>{graph.nodes?.length || 0}</strong> 节点 · <strong>{graph.edges?.length || 0}</strong> 关系</div>
+      </div>
+      <div className="graph-relation-legend">{Object.entries(graph.relation_counts || {}).map(([kind, count]) => <span key={kind}><i className={`relation-dot ${kind.toLowerCase()}`} />{relationLabel({ kind })} <em>{String(count)}</em></span>)}</div>
+      <GraphCanvas graph={graph} level={level} selectedNodeId={selected?.id} selectedEdgeId={selectedEdge?.id} showLabels={showLabels} showEdgeLabels={showEdgeLabels} onSelect={chooseNode} onSelectEdge={setSelectedEdge} />
+    </div>
+    <aside className={`inspector ${activeItem ? "open" : ""}`}>
+      {selected ? <>
+        <div className="inspector-head"><span className={`kind-icon ${selected.kind}`}><Code2 /></span><button className="icon-button" onClick={() => { setSelected(null); setNeighbors(null); }}><X size={15} /></button></div>
+        <span className="eyebrow">{selected.kind_label || selected.kind?.toUpperCase()}</span>
+        <h3>{selected.display_name || selected.name || selected.label}</h3>
+        <p className="mono break">{selected.qualified_name || selected.path || selected.id}</p>
+        <DescriptionList rows={[["仓库", selected.repository_id || "—"], ["模块", selected.module_id || "—"], ["证据等级", selected.certainty || "compiler"], ["起始行", selected.line_start || "—"], ["节点 ID", selected.id]]} />
+        <button className="button subtle full" onClick={expandNeighbors} disabled={neighborLoading}>{neighborLoading ? <LoaderCircle className="spin" size={15} /> : <Network size={15} />} {neighborhoodMode ? "已展开当前邻居" : "展开一跳邻居"}</button>
+        <section className="inspector-relations"><div className="inspector-section-title"><span>关联节点</span><em>{relatedNodes.length}</em></div>{neighborLoading && <p className="inspector-muted">正在加载关系…</p>}{!neighborLoading && relatedNodes.slice(0, 80).map((node: any) => { const edges = (neighbors?.edges || []).filter((edge: any) => edge.source === selected.id && edge.target === node.id || edge.target === selected.id && edge.source === node.id); return <button className="related-node" key={node.id} onClick={() => chooseNode(node)}><span className={`related-kind ${node.kind}`} /><span><strong>{node.display_name || node.name}</strong><small>{edges.map(relationLabel).join("、") || node.kind_label || node.kind}</small></span><ChevronRight size={14} /></button>; })}{!neighborLoading && !relatedNodes.length && <p className="inspector-muted">当前节点没有可展示的一跳关系。</p>}</section>
+      </> : selectedEdge ? <>
+        <div className="inspector-head"><span className="kind-icon relation"><Network /></span><button className="icon-button" onClick={() => setSelectedEdge(null)}><X size={15} /></button></div>
+        <span className="eyebrow">关系</span><h3>{relationLabel(selectedEdge)}</h3>
+        <DescriptionList rows={[["起点", nodeById.get(selectedEdge.source)?.display_name || selectedEdge.source], ["终点", nodeById.get(selectedEdge.target)?.display_name || selectedEdge.target], ["确定性", selectedEdge.certainty || "—"], ["置信度", selectedEdge.confidence == null ? "—" : Number(selectedEdge.confidence).toFixed(2)], ["关系 ID", selectedEdge.id]]} />
+        <p className="inspector-muted">点击起点或终点节点可查看其关联节点与源码定位。</p>
+      </> : <Empty icon={<PanelLeftClose />} title="节点详情" text="点击节点查看关联节点；点击连接线查看关系类型、方向和确定性。" />}
+    </aside>
+  </section>;
 }
 
 function KnowledgeSearch({ scope, notify }: { scope: Scope; notify: Function }) {

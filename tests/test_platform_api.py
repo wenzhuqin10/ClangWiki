@@ -97,6 +97,16 @@ def test_graph_and_logical_collection_keep_repositories_isolated(tmp_path: Path)
     graph = client.get(f"/api/graph?scope_type=repository&scope_id={first['id']}&level=symbol")
     assert graph.status_code == 200
     assert any(node["name"] == "pdsch_encode" for node in graph.json()["nodes"])
+    assert graph.json()["relation_counts"]["CALLS"] == 1
+    assert next(edge for edge in graph.json()["edges"] if edge["kind"] == "CALLS")["relation_label"] == "调用"
+    pdsch_node = next(node for node in graph.json()["nodes"] if node["name"] == "pdsch_encode")
+    neighbors = client.get(f"/api/graph/neighbors?node_id={pdsch_node['id']}&depth=1")
+    assert neighbors.status_code == 200
+    assert neighbors.json()["center"]["id"] == pdsch_node["id"]
+    assert neighbors.json()["relation_counts"]["CALLS"] == 1
+    assert any(edge["relation_label"] == "调用" for edge in neighbors.json()["edges"])
+    missing_neighbors = client.get("/api/graph/neighbors?node_id=missing-node")
+    assert missing_neighbors.status_code == 404
     collection_graph = client.post(f"/api/collections/{collection['id']}/relations/rebuild")
     assert collection_graph.status_code == 200
     # The collection only stores logical links; it never gains a source-tree copy.

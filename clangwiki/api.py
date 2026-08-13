@@ -309,8 +309,18 @@ def create_app(data_root: Path, web_root: Path | None = None) -> FastAPI:
         return services.graph.graph(scope_type, scope_id, level, kinds, certainty, limit)
 
     @app.get("/api/graph/neighbors")
-    def graph_neighbors(node_id: str, depth: int = 1, kinds: list[str] | None = Query(default=None)) -> dict[str, Any]:
-        return services.graph.neighbors(node_id, depth, kinds)
+    def graph_neighbors(
+        node_id: str,
+        depth: int = 1,
+        kinds: list[str] | None = Query(default=None),
+        limit: int = 500,
+        scope_type: Literal["repository", "collection"] | None = None,
+        scope_id: str | None = None,
+        level: Literal["repository", "module", "file", "symbol"] = "symbol",
+    ) -> dict[str, Any]:
+        return services.graph.neighbors(
+            node_id, depth, kinds, limit, scope_type=scope_type, scope_id=scope_id, level=level,
+        )
 
     @app.get("/api/graph/path")
     def graph_path(source_id: str, target_id: str, max_depth: int = 8) -> dict[str, Any]:

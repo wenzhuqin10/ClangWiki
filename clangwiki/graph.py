@@ -16,6 +16,26 @@ GRAPH_KINDS = {
     "REFERENCES", "DEFINES", "DOCUMENTS", "RELATED_TO",
 }
 
+GRAPH_RELATION_LABELS = {
+    "CONTAINS": "包含",
+    "DEPENDS_ON": "依赖",
+    "INCLUDES": "包含头文件",
+    "CALLS": "调用",
+    "POSSIBLE_CALL": "可能调用",
+    "REFERENCES": "引用",
+    "DEFINES": "定义",
+    "DOCUMENTS": "文档对应",
+    "RELATED_TO": "相关",
+}
+
+GRAPH_NODE_LABELS = {
+    "repository": "仓库",
+    "module": "模块",
+    "file": "文件",
+    "symbol": "符号",
+    "external": "外部符号",
+}
+
 
 class GraphService:
     def __init__(self, database: Database, registry: Registry) -> None:
@@ -202,7 +222,7 @@ class GraphService:
     ) -> dict[str, Any]:
         repository_ids = self._scope_repositories(scope_type, scope_id)
         if not repository_ids:
-            return {"nodes": [], "edges": [], "truncated": False}
+            return {"nodes": [], "edges": [], "truncated": False, "relation_counts": {}}
         placeholders = ",".join("?" for _ in repository_ids)
         nodes = self.db.all(
             f"SELECT * FROM knowledge_nodes WHERE repository_id IN ({placeholders})",
@@ -235,10 +255,40 @@ class GraphService:
         if level == "symbol":
             public_edges = [self._public_edge(edge) for edge in edges if edge["source_id"] in node_map and edge["target_id"] in node_map]
             used = {item[key] for item in public_edges for key in ("source", "target")}
-            return {"nodes": [node_map[item] for item in used][:limit], "edges": public_edges[:limit], "truncated": len(public_edges) > limit}
+            public_nodes = [node_map[item] for item in used][:limit]
+            return {
+                "nodes": public_nodes,
+                "edges": public_edges[:limit],
+                "truncated": len(public_edges) > limit,
+                "relation_counts": _relation_counts(public_edges),
+            }
         return self._aggregate(level, node_map, edges, limit)
 
-    def neighbors(self, node_id: str, depth: int = 1, kinds: Iterable[str] | None = None, limit: int = 500) -> dict[str, Any]:
+    def neighbors(
+        self,
+        node_id: str,
+        depth: int = 1,
+        kinds: Iterable[str] | None = None,
+        limit: int = 500,
+        *,
+        scope_type: str | None = None,
+        scope_id: str | None = None,
+        level: str = "symbol",
+    ) -> dict[str, Any]:
+        # Aggregate graph levels (repository/module/file) use derived edges,
+        # therefore query the same graph projection used by the canvas.  A raw
+        # SQL traversal would otherwise return module-to-file containment edges
+        # while the user is looking at module-to-module dependencies.
+        if scope_type and scope_id and level != "symbol":
+            projected = self.graph(scope_type, scope_id, level, kinds, None, max(limit * 4, limit))
+            projected_nodes = {node["id"]: node for node in projected.get("nodes", [])}
+            if node_id not in projected_nodes:
+                raise KeyError("图谱节点不存在")
+            projected_edges = list(projected.get("edges", []))
+            return _projected_neighbors(node_id, projected_nodes, projected_edges, depth, limit)
+        center_row = self.db.one("SELECT * FROM knowledge_nodes WHERE id=?", (node_id,))
+        if not center_row:
+            raise KeyError("图谱节点不存在")
         depth = max(1, min(3, depth))
         requested = {item.upper() for item in (kinds or [])}
         seen = {node_id}
@@ -264,9 +314,15 @@ class GraphService:
             frontier = next_frontier
         placeholders = ",".join("?" for _ in seen)
         nodes = self.db.all(f"SELECT * FROM knowledge_nodes WHERE id IN ({placeholders})", tuple(seen)) if seen else []
+        public_nodes = [self._public_node(node) for node in nodes]
+        public_edges = [self._public_edge(edge) for edge in edge_rows.values()]
+        public_center = self._public_node(center_row)
         return {
-            "nodes": [self._public_node(node) for node in nodes],
-            "edges": [self._public_edge(edge) for edge in edge_rows.values()],
+            "center": public_center,
+            "nodes": public_nodes,
+            "edges": public_edges,
+            "depth": depth,
+            "relation_counts": _relation_counts(public_edges),
             "truncated": len(seen) >= limit,
         }
 
@@ -393,6 +449,8 @@ class GraphService:
             "kind": row["kind"], "name": row["name"], "qualified_name": row.get("qualified_name"),
             "path": row.get("path"), "line_start": row.get("line_start"), "line_end": row.get("line_end"),
             "module_id": row.get("module_id"), "certainty": row.get("certainty"),
+            "kind_label": GRAPH_NODE_LABELS.get(str(row.get("kind") or ""), str(row.get("kind") or "未知")),
+            "display_name": row.get("name") or row.get("qualified_name") or row["id"],
             "metadata": json_loads(row.get("metadata_json"), {}),
         }
 
@@ -401,6 +459,7 @@ class GraphService:
         return {
             "id": row["id"], "source": row["source_id"], "target": row["target_id"],
             "kind": row["kind"], "certainty": row["certainty"], "confidence": row["confidence"],
+            "relation_label": GRAPH_RELATION_LABELS.get(str(row.get("kind") or ""), str(row.get("kind") or "相关")),
             "confirmed": bool(row["confirmed"]), "metadata": json_loads(row.get("metadata_json"), {}),
         }
 
@@ -437,7 +496,8 @@ class GraphService:
             if key not in aggregate_edges:
                 aggregate_edges[key] = {
                     "id": f"aggregate:{_digest('|'.join(key))}", "source": source, "target": target,
-                    "kind": edge["kind"], "certainty": edge["certainty"], "confidence": edge["confidence"],
+                    "kind": edge["kind"], "relation_label": GRAPH_RELATION_LABELS.get(edge["kind"], edge["kind"]),
+                    "certainty": edge["certainty"], "confidence": edge["confidence"],
                     "confirmed": bool(edge["confirmed"]), "count": 0, "metadata": {},
                 }
             aggregate_edges[key]["count"] += 1
@@ -493,6 +553,7 @@ class GraphService:
             "nodes": public_nodes[:limit],
             "edges": edge_values[:limit],
             "truncated": len(edge_values) > limit or len(public_nodes) > limit,
+            "relation_counts": _relation_counts(edge_values),
         }
 
     def _nodes_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
@@ -534,3 +595,46 @@ def _best_symbol(candidates: list[str], symbol_file: dict[str, str], file_path: 
         if symbol_file.get(candidate) == file_path:
             return candidate
     return candidates[0]
+
+
+def _relation_counts(edges: Iterable[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = defaultdict(int)
+    for edge in edges:
+        kind = str(edge.get("kind") or "RELATED_TO")
+        counts[kind] += 1
+    return dict(sorted(counts.items()))
+
+
+def _projected_neighbors(
+    node_id: str,
+    nodes: dict[str, dict[str, Any]],
+    edges: list[dict[str, Any]],
+    depth: int,
+    limit: int,
+) -> dict[str, Any]:
+    depth = max(1, min(3, depth))
+    seen = {node_id}
+    frontier = {node_id}
+    selected_edges: dict[str, dict[str, Any]] = {}
+    for _ in range(depth):
+        if not frontier or len(seen) >= limit:
+            break
+        next_frontier: set[str] = set()
+        for edge in edges:
+            if edge["source"] not in frontier and edge["target"] not in frontier:
+                continue
+            selected_edges[edge["id"]] = edge
+            for endpoint in (edge["source"], edge["target"]):
+                if endpoint not in seen:
+                    next_frontier.add(endpoint)
+        seen.update(next_frontier)
+        frontier = next_frontier
+    public_edges = list(selected_edges.values())
+    return {
+        "center": nodes[node_id],
+        "nodes": [nodes[item] for item in seen if item in nodes],
+        "edges": public_edges,
+        "depth": depth,
+        "relation_counts": _relation_counts(public_edges),
+        "truncated": len(seen) >= limit,
+    }
