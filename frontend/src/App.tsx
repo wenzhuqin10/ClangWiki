@@ -214,7 +214,11 @@ function Graph({ scope, notify }: { scope: Scope; notify: Function }) {
       setNeighbors(value);
       return value;
     } catch (e) { notify(message(e), true); return null; } finally { setNeighborLoading(false); }
-  }, [notify]);
+  // The request must follow the active scope and graph level.  Keeping this
+  // callback dependent on `notify` alone captured the initial null scope and
+  // module level, so later clicks could query the wrong projection (or receive
+  // a 404) after switching repositories, collections, files, or symbols.
+  }, [notify, scope?.type, scope?.id, level]);
 
   const chooseNode = useCallback((node: any | null) => {
     setSelected(node);
