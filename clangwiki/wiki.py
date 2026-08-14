@@ -24,10 +24,7 @@ class WikiService:
     def ingest_generated(self, repository_id: str, run_id: str, run_root: Path) -> list[dict[str, Any]]:
         output_root = run_root / "output"
         modules = _safe_json(run_root / "knowledge" / "modules.json", [])
-        module_by_document = {
-            f"Modules/{str(item.get('source_path') or 'root')}/index.md": str(item.get("module_id"))
-            for item in modules if isinstance(item, dict)
-        }
+        module_by_document = _module_document_map(modules)
         now = time.time()
         inserted: list[dict[str, Any]] = []
         for path in sorted(output_root.rglob("*.md")) if output_root.is_dir() else []:
@@ -35,19 +32,24 @@ class WikiService:
             content = path.read_text(encoding="utf-8", errors="replace")
             title = _title(content, relative)
             document_id = f"doc:{repository_id}:{run_id}:{_digest(relative)}"
-            module_id = module_by_document.get(relative)
+            module_id = module_by_document.get(_normalise_relative(relative))
+            storage = _knowledge_document_path(run_root, module_id, relative)
             metadata = {
                 "doc_id": document_id,
                 "repo_id": repository_id,
                 "run_id": run_id,
                 "module_id": module_id,
+                "module_source_path": self._module_source_path(modules, module_id),
                 "source_paths": self._module_sources(modules, module_id),
                 "tags": [],
                 "evidence_level": "compiler",
                 "backlinks": [item for item in LINK_RE.findall(content)],
+                "storage_path": storage.relative_to(run_root).as_posix(),
+                "module_folder": storage.parent.relative_to(run_root).as_posix(),
             }
             enriched = _with_frontmatter(content, metadata)
             path.write_text(enriched.rstrip() + "\n", encoding="utf-8")
+            _write_knowledge_document(storage, enriched)
             self.db.execute(
                 "INSERT OR REPLACE INTO documents(id,repository_id,collection_id,run_id,kind,title,relative_path,content,module_id,evidence_level,immutable,metadata_json,created_at,updated_at) "
                 "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -65,11 +67,19 @@ class WikiService:
     ) -> dict[str, Any]:
         now = time.time()
         document_id = f"collection-doc:{collection_id}:{_digest(relative_path)}"
-        metadata = {"doc_id": document_id, "collection_id": collection_id, "tags": ["跨仓汇总"]}
+        storage = _collection_document_path(self.registry.collection_root(collection_id), relative_path)
+        metadata = {
+            "doc_id": document_id,
+            "collection_id": collection_id,
+            "tags": ["跨仓汇总"],
+            "storage_path": storage.relative_to(self.registry.collection_root(collection_id)).as_posix(),
+            "module_folder": storage.parent.relative_to(self.registry.collection_root(collection_id)).as_posix(),
+        }
         enriched = _with_frontmatter(content, metadata)
         output = self.registry.collection_root(collection_id) / "output" / relative_path
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(enriched.rstrip() + "\n", encoding="utf-8")
+        _write_knowledge_document(storage, enriched)
         self.db.execute(
             "INSERT OR REPLACE INTO documents(id,repository_id,collection_id,run_id,kind,title,relative_path,content,module_id,evidence_level,immutable,metadata_json,created_at,updated_at) "
             "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -291,13 +301,25 @@ class WikiService:
         return []
 
     @staticmethod
+    def _module_source_path(modules: list[Any], module_id: str | None) -> str | None:
+        for item in modules:
+            if isinstance(item, dict) and str(item.get("module_id")) == str(module_id):
+                value = str(item.get("source_path") or "").strip()
+                return value or None
+        return None
+
+    @staticmethod
     def _public_document(row: dict[str, Any], include_content: bool) -> dict[str, Any]:
+        metadata = json_loads(row.get("metadata_json"), {})
         result = {
             "id": row["id"], "repository_id": row.get("repository_id"), "collection_id": row.get("collection_id"),
             "run_id": row.get("run_id"), "kind": row["kind"], "title": row["title"],
             "relative_path": row.get("relative_path"), "module_id": row.get("module_id"),
             "evidence_level": row.get("evidence_level"), "immutable": bool(row.get("immutable")),
-            "metadata": json_loads(row.get("metadata_json"), {}), "created_at": row["created_at"], "updated_at": row["updated_at"],
+            "metadata": metadata,
+            "storage_path": metadata.get("storage_path"),
+            "module_folder": metadata.get("module_folder"),
+            "created_at": row["created_at"], "updated_at": row["updated_at"],
         }
         if include_content:
             result["content"] = row.get("content") or ""
@@ -342,3 +364,55 @@ def _safe_json(path: Path, fallback: Any) -> Any:
         return read_json(path)
     except (OSError, ValueError):
         return fallback
+
+
+def _normalise_relative(value: str) -> str:
+    """Return a stable POSIX relative path for output-to-module matching."""
+    return str(Path(value.replace("\\", "/"))).replace("\\", "/").lstrip("./")
+
+
+def _module_document_map(modules: list[Any]) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for item in modules:
+        if not isinstance(item, dict) or not item.get("module_id"):
+            continue
+        module_id = str(item["module_id"])
+        source_path = str(item.get("source_path") or "").replace("\\", "/").strip("/")
+        candidates = {
+            f"Modules/{source_path}/index.md" if source_path and source_path != "." else "Modules/index.md",
+            f"Modules/{source_path or 'root'}/index.md",
+        }
+        for candidate in candidates:
+            mapping[_normalise_relative(candidate)] = module_id
+    return mapping
+
+
+def _safe_component(value: str, fallback: str = "root") -> str:
+    clean = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value).strip())
+    clean = clean.strip("._")
+    return clean or fallback
+
+
+def _knowledge_document_path(run_root: Path, module_id: str | None, relative_path: str) -> Path:
+    base = run_root / "knowledge" / "documents"
+    if module_id:
+        # Module IDs are stable across a run and avoid collisions when two
+        # modules happen to have the same display name.
+        folder = base / "modules" / _safe_component(module_id)
+        filename = Path(relative_path.replace("\\", "/")).name or "index.md"
+        return folder / _safe_component(filename, "index.md")
+    return base / "repository" / _safe_relative_path(relative_path)
+
+
+def _collection_document_path(collection_root: Path, relative_path: str) -> Path:
+    return collection_root / "knowledge" / "documents" / "collection" / _safe_relative_path(relative_path)
+
+
+def _safe_relative_path(value: str) -> Path:
+    parts = [part for part in Path(value.replace("\\", "/")).parts if part not in {"", ".", ".."}]
+    return Path(*(_safe_component(part) for part in parts)) if parts else Path("index.md")
+
+
+def _write_knowledge_document(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content.rstrip() + "\n", encoding="utf-8")

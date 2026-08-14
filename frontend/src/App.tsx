@@ -138,13 +138,9 @@ function Overview({ status, repositories, collections, jobs, onRepo, onView }: a
   </>;
 }
 
-const LEAF_DOCUMENT_CHAPTERS = [
-  "子模块概述", "职责与边界", "领域定位与设计约束", "系统交互与接口关系", "核心任务流程",
-  "状态、事件与时序", "核心实现", "配置、宏与运行变体", "调试与故障定位", "Agent 开发导航", "证据、限制与待确认项",
-];
-const SUMMARY_DOCUMENT_CHAPTERS = [
-  "层级定位", "子模块组成", "聚合职责与边界", "跨子模块协作", "业务流程汇聚", "公共数据与接口",
-  "状态、时序与资源约束", "开发影响导航", "子文档导航", "汇聚证据与限制",
+const DOCUMENT_CHAPTERS = [
+  "模块概述", "领域背景", "系统交互关系", "任务流程", "核心实现",
+  "状态与时序", "调试与故障定位", "设计经验", "Agent 开发导航",
 ];
 
 function DocumentGenerationPanel({ repositoryId, moduleTree, notify, onJobs }: any) {
@@ -154,7 +150,7 @@ function DocumentGenerationPanel({ repositoryId, moduleTree, notify, onJobs }: a
   const [submitting, setSubmitting] = useState(false);
   const nodes = Object.entries(moduleTree?.nodes || {}).map(([module_id, node]) => ({ module_id, ...(node as any) }));
   const moduleMode = mode !== "repository";
-  const chapters = mode === "leaf-module" ? LEAF_DOCUMENT_CHAPTERS : mode === "module-summary" ? SUMMARY_DOCUMENT_CHAPTERS : mode === "module" ? [...LEAF_DOCUMENT_CHAPTERS, ...SUMMARY_DOCUMENT_CHAPTERS] : [];
+  const chapters = mode === "repository" ? [] : DOCUMENT_CHAPTERS;
   const generatedCount = documents.filter((doc) => {
     const path = String(doc.relative_path || "");
     if (mode === "repository") return ["Architecture.md", "README.md"].includes(path);
@@ -196,7 +192,7 @@ function DocumentGenerationPanel({ repositoryId, moduleTree, notify, onJobs }: a
       ].map(([value, title, detail]) => <button key={value} className={`generation-mode ${mode === value ? "active" : ""}`} onClick={() => { setMode(value as typeof mode); setSelectedModules(new Set()); }}><strong>{title}</strong><small>{detail}</small></button>)}
     </div>
     {moduleMode && <div className="generation-modules"><div className="generation-modules-head"><strong>模块范围</strong><span>{selectedModules.size ? `已选 ${selectedModules.size} 个；未选择则生成全部` : "未选择则生成全部模块"}</span></div><div className="generation-module-list">{nodes.sort((a, b) => Number(a.depth || 0) - Number(b.depth || 0)).map((node) => <label key={node.module_id} className="generation-module-row" style={{ paddingLeft: `${10 + Number(node.depth || 0) * 16}px` }}><input type="checkbox" checked={selectedModules.has(node.module_id)} onChange={() => toggleModule(node.module_id)} /><span><strong>{node.display_name || node.source_path || node.module_id}</strong><small>{node.source_path || "根模块"} · {node.is_leaf ? "叶子模块" : "层级汇总"}</small></span></label>)}{!nodes.length && <span className="generation-empty">完成一次代码分析后可选择模块。</span>}</div></div>}
-    {chapters.length > 0 && <div className="chapter-contract"><div><strong>{mode === "leaf-module" ? "叶子模块章节契约" : mode === "module-summary" ? "层级汇总章节契约" : "叶子 + 层级章节契约"}</strong><span>每篇文档严格按以下章节输出，证据不足时保留章节并标记无法确定。</span></div><ol>{chapters.map((chapter) => <li key={chapter}>{chapter}</li>)}</ol></div>}
+    {chapters.length > 0 && <div className="chapter-contract"><div><strong>{mode === "leaf-module" ? "叶子模块九章契约" : mode === "module-summary" ? "层级汇总九章契约" : "叶子与层级统一九章契约"}</strong><span>叶子文档与父级汇总使用同一组语义章节；汇总层读取子文档后按相同顺序压缩和提升信息。</span></div><ol>{chapters.map((chapter) => <li key={chapter}>{chapter}</li>)}</ol></div>}
     {mode === "repository" && <div className="chapter-contract compact"><div><strong>仓库级章节</strong><span>读取模块树、模块快照和关系图，汇聚系统边界、依赖、数据流、调用流与证据限制。</span></div></div>}
     <div className="generation-actions"><span>当前选择：{mode === "module" ? "叶子 + 层级汇总" : mode === "leaf-module" ? "叶子模块" : mode === "module-summary" ? "层级汇总" : "仓库级"}</span><button className="button primary" disabled={submitting || (moduleMode && !nodes.length)} onClick={submit}>{submitting ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}开始生成</button></div>
   </section>;

@@ -62,6 +62,58 @@ def test_manual_knowledge_is_searchable_before_first_generation(tmp_path: Path) 
     assert search.json()["results"][0]["kind"] == "manual"
 
 
+def test_generated_documents_are_stored_in_module_knowledge_folders(tmp_path: Path) -> None:
+    app = create_app(tmp_path / "data")
+    client = TestClient(app)
+    repository = client.post("/api/repositories", json={"path": str(_repository(tmp_path))}).json()
+    services = app.state.services
+    run_id = "run-module-documents"
+    run_root = services.registry.run_root(repository["id"], run_id)
+    output = run_root / "output"
+    module_output = output / "Modules" / "src" / "phy" / "pdsch" / "encoder"
+    module_output.mkdir(parents=True)
+    (module_output / "index.md").write_text(
+        "# PDSCH Encoder\n\n## 模块概述\n这是一个用于测试的模块文档，包含源码职责、输入输出和可追溯证据。\n",
+        encoding="utf-8",
+    )
+    output.mkdir(exist_ok=True)
+    (output / "Architecture.md").write_text("# 系统架构\n\n## 系统目标与边界\n仓库级文档。\n", encoding="utf-8")
+    knowledge = run_root / "knowledge"
+    knowledge.mkdir(parents=True)
+    (knowledge / "modules.json").write_text(json.dumps([
+        {
+            "module_id": "src--phy--pdsch--encoder",
+            "display_name": "encoder",
+            "source_path": "src/phy/pdsch/encoder",
+            "direct_files": ["src/phy/pdsch/encoder/encode.c"],
+        },
+    ]), encoding="utf-8")
+    services.database.execute(
+        "INSERT INTO runs(id,repository_id,status,config_hash,schema_version,artifact_path,manifest_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
+        (run_id, repository["id"], "completed", "test", "test", str(run_root), "{}", time.time()),
+    )
+    services.database.execute(
+        "UPDATE repositories SET active_run_id=?,status='ready' WHERE id=?",
+        (run_id, repository["id"]),
+    )
+
+    documents = services.wiki.ingest_generated(repository["id"], run_id, run_root)
+    module_document = next(item for item in documents if item["module_id"])
+    expected = run_root / "knowledge" / "documents" / "modules" / "src--phy--pdsch--encoder" / "index.md"
+    assert expected.is_file()
+    assert module_document["storage_path"] == expected.relative_to(run_root).as_posix()
+    assert module_document["module_folder"] == expected.parent.relative_to(run_root).as_posix()
+
+    services.indexer.index_repository(repository["id"], profile="balanced")
+    chunk = services.database.one(
+        "SELECT metadata_json FROM chunks WHERE document_id=? LIMIT 1",
+        (module_document["id"],),
+    )
+    metadata = json.loads(chunk["metadata_json"])
+    assert metadata["module_folder"] == module_document["module_folder"]
+    assert metadata["storage_path"] == module_document["storage_path"]
+
+
 def test_graph_and_logical_collection_keep_repositories_isolated(tmp_path: Path) -> None:
     app = create_app(tmp_path / "data")
     client = TestClient(app)

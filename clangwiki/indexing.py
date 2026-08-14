@@ -630,12 +630,24 @@ def _select_vector_chunks(
 
 def _document_chunks(document: dict[str, Any]) -> Iterator[ChunkRecord]:
     content = str(document.get("content") or "")
+    document_metadata = json_loads(document.get("metadata_json"), {})
+    if not isinstance(document_metadata, dict):
+        document_metadata = {}
+    common_metadata = {
+        **document_metadata,
+        "module_id": document.get("module_id") or document_metadata.get("module_id"),
+        "relative_path": document.get("relative_path") or document_metadata.get("relative_path"),
+        "storage_path": document_metadata.get("storage_path"),
+        "module_folder": document_metadata.get("module_folder"),
+        "run_id": document.get("run_id") or document_metadata.get("run_id"),
+        "evidence_level": document.get("evidence_level") or document_metadata.get("evidence_level"),
+    }
     matches = list(HEADING_RE.finditer(content))
     if not matches:
         yield _chunk(
             document.get("repository_id"), document.get("collection_id"), document["id"], None,
             "manual" if document["kind"] == "manual" else "wiki", document["title"], content,
-            _document_uri(document, None), {"module_id": document.get("module_id"), "heading": None},
+            _document_uri(document, None), {**common_metadata, "heading": None},
         )
         return
     for index, match in enumerate(matches):
@@ -649,7 +661,7 @@ def _document_chunks(document: dict[str, Any]) -> Iterator[ChunkRecord]:
         yield _chunk(
             document.get("repository_id"), document.get("collection_id"), document["id"], None,
             "manual" if document["kind"] == "manual" else "wiki", title, section,
-            _document_uri(document, heading), {"module_id": document.get("module_id"), "heading": heading, "evidence_level": document.get("evidence_level")},
+            _document_uri(document, heading), {**common_metadata, "heading": heading},
         )
 
 

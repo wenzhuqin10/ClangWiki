@@ -44,7 +44,7 @@ def test_context_marks_uncertain_calls(tmp_path: Path):
     )
     context = result.read_text(encoding="utf-8")
     assert "POSSIBLE_CALL" in context
-    assert "## 叶子模块概述" in context
+    assert "## 模块概述" in context
     assert "节点类型：信道内叶子模块" in context
     assert "不得改名、遗漏、合并或增加二级章节" in context
 
@@ -81,10 +81,14 @@ def test_markdown_validation_requires_heading():
 
 def test_markdown_validation_enforces_document_contract():
     sections = required_section_headings("leaf-module")
+    assert sections == (
+        "模块概述", "领域背景", "系统交互关系", "任务流程", "核心实现",
+        "状态与时序", "调试与故障定位", "设计经验", "Agent 开发导航",
+    )
     markdown = ["# 示例模块"]
     for heading in sections:
         markdown.extend(["", f"## {heading}", "当前证据无法确定；需要补充运行日志或设计文档。"])
     validate_markdown("\n".join(markdown), "leaf-module")
 
     with pytest.raises(Exception):
-        validate_markdown("# 示例模块\n\n## 叶子模块概述\n内容足够长但章节不完整。" * 4, "leaf-module")
+        validate_markdown("# 示例模块\n\n## 模块概述\n内容足够长但章节不完整。" * 4, "leaf-module")

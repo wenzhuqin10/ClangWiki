@@ -23,7 +23,7 @@ class _RecordingRunner:
                 self.started.set()
         if task_id.startswith("leaf-"):
             self.release.wait(timeout=2)
-        return "# Generated\n\n## 叶子模块概述\n当前证据无法确定。"
+        return "# Generated\n\n## 模块概述\n当前证据无法确定。"
 
 
 def test_leaf_generation_runs_in_parallel_before_aggregate(tmp_path: Path, monkeypatch) -> None:
