@@ -184,6 +184,8 @@ function Graph({ scope, notify }: { scope: Scope; notify: Function }) {
   const [neighborLoading, setNeighborLoading] = useState(false);
   const [showLabels, setShowLabels] = useState(true);
   const [showEdgeLabels, setShowEdgeLabels] = useState(true);
+  const [showIsolated, setShowIsolated] = useState(false);
+  const [compactLargeGraph, setCompactLargeGraph] = useState(true);
   const [loading, setLoading] = useState(false);
 
   const load = useCallback(async () => {
@@ -234,6 +236,43 @@ function Graph({ scope, notify }: { scope: Scope; notify: Function }) {
   const relatedNodes = (neighbors?.nodes || []).filter((node: any) => node.id !== selected?.id);
   const relationLabel = (edge: any) => edge.relation_label || ({ CONTAINS: "包含", DEPENDS_ON: "依赖", INCLUDES: "包含头文件", CALLS: "调用", POSSIBLE_CALL: "可能调用", REFERENCES: "引用", DEFINES: "定义", DOCUMENTS: "文档对应", RELATED_TO: "相关" } as Record<string, string>)[edge.kind] || edge.kind || "关系";
 
+  const visibleGraph = useMemo(() => {
+    if ((level !== "file" && level !== "symbol") || neighborhoodMode) return graph;
+    let edges = [...(graph.edges || [])];
+    let visibleIds = new Set<string>();
+    if (compactLargeGraph) {
+      const edgeDegree = new Map<string, number>();
+      const ranked = edges.sort((left: any, right: any) =>
+        Number(right.count || right.confidence || 0) - Number(left.count || left.confidence || 0));
+      const backbone: any[] = [];
+      for (const edge of ranked) {
+        const sourceDegree = edgeDegree.get(edge.source) || 0;
+        const targetDegree = edgeDegree.get(edge.target) || 0;
+        const adds = Number(!visibleIds.has(edge.source)) + Number(!visibleIds.has(edge.target));
+        if (visibleIds.size + adds > 90) continue;
+        if (sourceDegree >= 5 && targetDegree >= 5) continue;
+        backbone.push(edge);
+        visibleIds.add(edge.source); visibleIds.add(edge.target);
+        edgeDegree.set(edge.source, sourceDegree + 1);
+        edgeDegree.set(edge.target, targetDegree + 1);
+        if (backbone.length >= 125) break;
+      }
+      edges = backbone;
+    } else {
+      for (const edge of edges) { visibleIds.add(edge.source); visibleIds.add(edge.target); }
+    }
+    if (showIsolated) for (const node of graph.nodes || []) visibleIds.add(node.id);
+    const relationCounts: Record<string, number> = {};
+    for (const edge of edges) relationCounts[edge.kind] = (relationCounts[edge.kind] || 0) + 1;
+    return {
+      ...graph,
+      nodes: (graph.nodes || []).filter((node: any) => visibleIds.has(node.id)),
+      edges,
+      relation_counts: relationCounts,
+    };
+  }, [graph, level, showIsolated, compactLargeGraph, neighborhoodMode]);
+  const hiddenIsolatedCount = Math.max(0, (graph.nodes?.length || 0) - (visibleGraph.nodes?.length || 0));
+
   if (!scope) return <ScopeEmpty />;
   const activeItem = selected || selectedEdge;
   return <section className="graph-layout">
@@ -244,11 +283,13 @@ function Graph({ scope, notify }: { scope: Scope; notify: Function }) {
         <button className="icon-button" title="刷新图谱" onClick={load}><RefreshCw className={loading ? "spin" : ""} size={16} /></button>
         <button className={`graph-toggle ${showLabels ? "active" : ""}`} onClick={() => setShowLabels((value) => !value)}>节点文字</button>
         <button className={`graph-toggle ${showEdgeLabels ? "active" : ""}`} onClick={() => setShowEdgeLabels((value) => !value)}>关系文字</button>
+        {(level === "file" || level === "symbol") && <button className={`graph-toggle ${compactLargeGraph ? "active" : ""}`} onClick={() => setCompactLargeGraph((value) => !value)}>核心关系</button>}
+        {(level === "file" || level === "symbol") && <button className={`graph-toggle ${showIsolated ? "active" : ""}`} onClick={() => setShowIsolated((value) => !value)}>孤立节点</button>}
         {neighborhoodMode && <button className="button subtle small" onClick={load}>返回全图</button>}
-        <div className="graph-summary"><strong>{graph.nodes?.length || 0}</strong> 节点 · <strong>{graph.edges?.length || 0}</strong> 关系</div>
+        <div className="graph-summary"><strong>{visibleGraph.nodes?.length || 0}</strong> 节点 · <strong>{visibleGraph.edges?.length || 0}</strong> 关系{hiddenIsolatedCount > 0 && <span> · 已精简 {hiddenIsolatedCount} 个节点</span>}</div>
       </div>
-      <div className="graph-relation-legend">{Object.entries(graph.relation_counts || {}).map(([kind, count]) => <span key={kind}><i className={`relation-dot ${kind.toLowerCase()}`} />{relationLabel({ kind })} <em>{String(count)}</em></span>)}</div>
-      <GraphCanvas graph={graph} level={level} selectedNodeId={selected?.id} selectedEdgeId={selectedEdge?.id} showLabels={showLabels} showEdgeLabels={showEdgeLabels} onSelect={chooseNode} onSelectEdge={setSelectedEdge} />
+      <div className="graph-relation-legend">{Object.entries(visibleGraph.relation_counts || {}).map(([kind, count]) => <span key={kind}><i className={`relation-dot ${kind.toLowerCase()}`} />{relationLabel({ kind })} <em>{String(count)}</em></span>)}</div>
+      <GraphCanvas graph={visibleGraph} level={level} selectedNodeId={selected?.id} selectedEdgeId={selectedEdge?.id} showLabels={showLabels} showEdgeLabels={showEdgeLabels} onSelect={chooseNode} onSelectEdge={setSelectedEdge} />
     </div>
     <aside className={`inspector ${activeItem ? "open" : ""}`}>
       {selected ? <>
