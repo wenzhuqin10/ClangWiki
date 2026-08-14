@@ -77,7 +77,13 @@ class PlatformGenerationService:
         if previous:
             previous_root = Path(previous["artifact_path"])
             incremental = bool(changed_paths) and not self._requires_full_rebuild(changed_paths, previous_manifest, config_hash)
-            if incremental:
+            # A document-only run still needs the previous snapshot as its
+            # read-only context.  For example, an aggregate summary may be
+            # regenerated after editing its prompt while its child documents
+            # remain unchanged.  Copying only the output tree preserves those
+            # child snapshots without re-running analysis or model calls.
+            partial_document_run = bool(config.get("only") or config.get("module_ids"))
+            if incremental or partial_document_run:
                 previous_output = previous_root / "output"
                 if previous_output.is_dir():
                     shutil.copytree(previous_output, run_root / "output", dirs_exist_ok=True)
@@ -87,10 +93,18 @@ class PlatformGenerationService:
                 shutil.copytree(previous_root / "build", run_root / "build", dirs_exist_ok=True)
             if config.get("skip_analysis") and (previous_root / "analysis").is_dir():
                 shutil.copytree(previous_root / "analysis", run_root / "analysis", dirs_exist_ok=True)
-        module_ids = self._affected_modules(previous, changed_paths)
-        full_rebuild = not previous or not module_ids or self._requires_full_rebuild(changed_paths, previous_manifest, config_hash)
-        if full_rebuild:
-            module_ids = ()
+        explicit_module_ids = tuple(str(item) for item in (config.get("module_ids") or ()) if str(item))
+        affected_module_ids = explicit_module_ids or self._affected_modules(previous, changed_paths)
+        full_rebuild = (
+            not previous
+            or self._requires_full_rebuild(changed_paths, previous_manifest, config_hash)
+            or (bool(changed_paths) and not affected_module_ids)
+        )
+        # A first run still has to analyse the whole repository, but an
+        # explicitly selected module set must be forwarded to the planner so
+        # that only the requested document units are written.  For ordinary
+        # incremental runs, the affected module closure remains the filter.
+        module_ids = explicit_module_ids or (() if full_rebuild else affected_module_ids)
         branch, commit = git_identity(source_root)
         manifest = {
             "file_hashes": current_hashes,
@@ -221,6 +235,7 @@ class PlatformGenerationService:
         # them.  Canonicalise both entry points before hashing so an unchanged
         # repository does not accidentally start another expensive model run.
         only = sorted({str(item) for item in (config.get("only") or ()) if str(item)})
+        module_ids = sorted({str(item) for item in (config.get("module_ids") or ()) if str(item)})
         channel_paths = sorted({str(item) for item in (config.get("channel_module_paths") or ()) if str(item)})
         leaf_paths = sorted({str(item) for item in (config.get("leaf_module_paths") or ()) if str(item)})
         return {
@@ -231,6 +246,7 @@ class PlatformGenerationService:
             "max_source_chars_per_task": int(config.get("max_source_chars_per_task") or 36000),
             "model": str(config.get("model") or "").strip(),
             "only": only or None,
+            "module_ids": module_ids or None,
             "skip_analysis": bool(config.get("skip_analysis", False)),
             "skip_cmake": bool(config.get("skip_cmake", False)),
         }

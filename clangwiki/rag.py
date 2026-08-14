@@ -86,8 +86,14 @@ class RagService:
             "区分编译器事实、源码事实、人工知识和候选关系。证据不足时明确写出无法确定及所需材料。"
             "只输出最终中文 Markdown 答案。"
         )
-        answer = runner.run_prompt(
-            cwd, context_file, task_root / "answer.stdout.txt", task_root / "answer.stderr.txt", prompt,
+        answer = self._run_model(
+            runner,
+            cwd,
+            context_file,
+            task_root / "answer.stdout.txt",
+            task_root / "answer.stderr.txt",
+            prompt,
+            phase="初次回答生成",
         ).strip()
         valid, invalid = validate_citations(answer, set(evidence))
         status = "completed"
@@ -103,8 +109,14 @@ class RagService:
                 "修复附件中的待修复回答。只能使用证据清单中存在的引用，删除无证据结论。"
                 "如果证据不足，明确说明无法确定。只输出修复后的最终 Markdown。"
             )
-            answer = runner.run_prompt(
-                cwd, repair_file, task_root / "repair.stdout.txt", task_root / "repair.stderr.txt", repair_prompt,
+            answer = self._run_model(
+                runner,
+                cwd,
+                repair_file,
+                task_root / "repair.stdout.txt",
+                task_root / "repair.stderr.txt",
+                repair_prompt,
+                phase="引用校验修复",
             ).strip()
             valid, invalid = validate_citations(answer, set(evidence))
             if not valid:
@@ -116,6 +128,31 @@ class RagService:
             for key in used if key in evidence
         ]
         return self._persist_turn(conversation_id, query, answer, status, search, citations, turn_id=turn_id)
+
+    @staticmethod
+    def _run_model(
+        runner: OpenCodeRunner,
+        cwd: Path,
+        context_file: Path,
+        stdout_log: Path,
+        stderr_log: Path,
+        prompt: str,
+        phase: str,
+    ) -> str:
+        """Run OpenCode while preserving an actionable, user-facing reason.
+
+        The API deliberately returns the diagnostic rather than a generic
+        ``500``.  This is especially useful for local deployments where the
+        executable, model selection, permissions, timeout and stderr log path
+        are all meaningful troubleshooting information.
+        """
+        try:
+            return runner.run_prompt(cwd, context_file, stdout_log, stderr_log, prompt)
+        except OpenCodeError as exc:
+            raise OpenCodeError(f"RAG {phase}失败：{exc}") from exc
+        except Exception as exc:
+            detail = str(exc).strip() or repr(exc)
+            raise OpenCodeError(f"RAG {phase}失败（{type(exc).__name__}）：{detail[:2000]}") from exc
 
     def _evidence(self, results: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         counters = {"W": 0, "C": 0, "G": 0, "M": 0}

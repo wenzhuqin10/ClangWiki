@@ -67,3 +67,19 @@ def test_pdsch_children_are_leaves_and_pdsch_is_parent_summary(tmp_path: Path):
         "Modules/src/phy/pdsch/encoder/index.md",
         "Modules/src/phy/pdsch/mapping/index.md",
     )
+
+    leaf_tasks = plan_documents(modules, ("leaf-module",))
+    assert leaf_tasks
+    assert all(task.document_type == "leaf-module" for task in leaf_tasks)
+    assert {task.module_ids[0] for task in leaf_tasks} == {
+        "src--phy--pdsch--encoder",
+        "src--phy--pdsch--mapping",
+    }
+
+    summary_tasks = plan_documents(modules, ("module-summary",))
+    assert summary_tasks
+    assert all(task.document_type == "module-summary" for task in summary_tasks)
+    summary_ids = {task.module_ids[0] for task in summary_tasks}
+    assert "src--phy--pdsch" in summary_ids
+    assert "src--phy" in summary_ids
+    assert "src" in summary_ids

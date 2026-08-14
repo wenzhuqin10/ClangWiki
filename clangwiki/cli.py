@@ -93,7 +93,10 @@ def _parser() -> argparse.ArgumentParser:
     generate.add_argument("--skip-analysis", action="store_true")
     generate.add_argument(
         "--only", action="append",
-        choices=["readme", "architecture", "module", "data-structures", "call-flows", "api-reference"],
+        choices=[
+            "readme", "architecture", "module", "leaf-module", "module-summary",
+            "data-structures", "call-flows", "api-reference",
+        ],
         default=[],
     )
 

@@ -24,7 +24,12 @@ def plan_documents(
     top_modules = tuple(module for module in modules.values() if module.parent_id is None)
 
     # Bottom-up order is required: channel leaves first, then their parents.
-    if include("module"):
+    # ``module`` remains the backwards-compatible selector for both kinds of
+    # hierarchy documents.  The more explicit selectors are used by the UI so
+    # a user can generate only the smallest leaf documents or only the
+    # bottom-up aggregate summaries.
+    module_requested = not requested or bool(requested & {"module", "leaf-module", "module-summary"})
+    if module_requested:
         ordered_modules = sorted(
             modules.values(),
             key=lambda module: (-module.depth, 0 if module.is_leaf else 1, module.source_path),
@@ -33,6 +38,8 @@ def plan_documents(
             if selected_modules and module.module_id not in selected_modules:
                 continue
             document_type = "leaf-module" if module.is_leaf else "module-summary"
+            if requested and "module" not in requested and document_type not in requested:
+                continue
             hierarchy_role = "leaf" if module.is_leaf else "aggregate"
             tasks.append(
                 DocumentTask(

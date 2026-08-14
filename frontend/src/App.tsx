@@ -111,7 +111,7 @@ function App() {
       <header className="topbar"><div><span className="eyebrow">{scope ? `${scope.type === "repository" ? "代码仓" : "知识空间"} / ${scope.name}` : "ClangWiki"}</span><h1>{PAGE[view][0]}</h1><p>{PAGE[view][1]}</p></div><div className="top-actions"><button className="button ghost" onClick={refresh}><RefreshCw size={15} />刷新</button>{scope && <button className="button primary" disabled={busy} onClick={() => runAction("generate")}>{busy ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}生成 Wiki</button>}</div></header>
       <div className="view-container">
         {view === "overview" && <Overview status={status} repositories={repositories} collections={collections} jobs={jobs} onRepo={chooseRepository} onView={setView} />}
-        {view === "repositories" && <Repositories repositories={repositories} scope={scope} select={chooseRepository} onAdd={() => setModal("repo")} onGenerate={() => runAction("generate")} onIndex={() => runAction("index")} notify={notify} refresh={refresh} />}
+        {view === "repositories" && <Repositories repositories={repositories} scope={scope} moduleTree={moduleTree} select={chooseRepository} onAdd={() => setModal("repo")} onGenerate={() => runAction("generate")} onIndex={() => runAction("index")} onJobs={() => setView("jobs")} notify={notify} refresh={refresh} />}
         {view === "collections" && <Collections collections={collections} repositories={repositories} scope={scope} select={chooseCollection} onAdd={() => setModal("collection")} notify={notify} refresh={refresh} />}
         {view === "wiki" && <Wiki scope={scope} onManual={() => setModal("manual")} notify={notify} />}
         {view === "graph" && <Graph scope={scope} notify={notify} />}
@@ -138,7 +138,71 @@ function Overview({ status, repositories, collections, jobs, onRepo, onView }: a
   </>;
 }
 
-function Repositories({ repositories, scope, select, onAdd, onGenerate, onIndex, notify, refresh }: any) {
+const LEAF_DOCUMENT_CHAPTERS = [
+  "子模块概述", "职责与边界", "领域定位与设计约束", "系统交互与接口关系", "核心任务流程",
+  "状态、事件与时序", "核心实现", "配置、宏与运行变体", "调试与故障定位", "Agent 开发导航", "证据、限制与待确认项",
+];
+const SUMMARY_DOCUMENT_CHAPTERS = [
+  "层级定位", "子模块组成", "聚合职责与边界", "跨子模块协作", "业务流程汇聚", "公共数据与接口",
+  "状态、时序与资源约束", "开发影响导航", "子文档导航", "汇聚证据与限制",
+];
+
+function DocumentGenerationPanel({ repositoryId, moduleTree, notify, onJobs }: any) {
+  const [mode, setMode] = useState<"module" | "leaf-module" | "module-summary" | "repository">("module");
+  const [selectedModules, setSelectedModules] = useState<Set<string>>(new Set());
+  const [documents, setDocuments] = useState<any[]>([]);
+  const [submitting, setSubmitting] = useState(false);
+  const nodes = Object.entries(moduleTree?.nodes || {}).map(([module_id, node]) => ({ module_id, ...(node as any) }));
+  const moduleMode = mode !== "repository";
+  const chapters = mode === "leaf-module" ? LEAF_DOCUMENT_CHAPTERS : mode === "module-summary" ? SUMMARY_DOCUMENT_CHAPTERS : mode === "module" ? [...LEAF_DOCUMENT_CHAPTERS, ...SUMMARY_DOCUMENT_CHAPTERS] : [];
+  const generatedCount = documents.filter((doc) => {
+    const path = String(doc.relative_path || "");
+    if (mode === "repository") return ["Architecture.md", "README.md"].includes(path);
+    return path.startsWith("Modules/");
+  }).length;
+
+  useEffect(() => {
+    api.get<any>(`/api/wiki/documents?${query({ scope_type: "repository", scope_id: repositoryId })}`)
+      .then((value) => setDocuments(value.documents || []))
+      .catch(() => setDocuments([]));
+  }, [repositoryId]);
+
+  const toggleModule = (id: string) => {
+    const next = new Set(selectedModules);
+    next.has(id) ? next.delete(id) : next.add(id);
+    setSelectedModules(next);
+  };
+  const submit = async () => {
+    setSubmitting(true);
+    try {
+      const only = mode === "repository" ? ["architecture", "readme"] : [mode];
+      const module_ids = moduleMode ? Array.from(selectedModules) : [];
+      await api.post(`/api/repositories/${repositoryId}/generate`, { overrides: { only, module_ids } });
+      notify("文档生成任务已进入队列，可在任务中心查看阶段和错误原因。");
+      onJobs();
+    } catch (error) { notify(message(error), true); }
+    finally { setSubmitting(false); }
+  };
+
+  return <section className="card document-generation-card">
+    <CardTitle title="分层文档生成" eyebrow="DOCUMENT WORKBENCH" action={<span className="doc-status">已有 {generatedCount} 篇快照</span>} />
+    <p className="section-intro">以信道根的下一层功能子模块作为叶子单元，先生成最小文档，再按依赖顺序向上汇聚；机器快照保持不可变。</p>
+    <div className="generation-mode-grid">
+      {[
+        ["module", "模块全量", "叶子文档 + 层级汇总"],
+        ["leaf-module", "叶子模块", "仅生成最小单元文档"],
+        ["module-summary", "层级汇总", "读取子文档向上总结"],
+        ["repository", "仓库级", "架构文档 + README"],
+      ].map(([value, title, detail]) => <button key={value} className={`generation-mode ${mode === value ? "active" : ""}`} onClick={() => { setMode(value as typeof mode); setSelectedModules(new Set()); }}><strong>{title}</strong><small>{detail}</small></button>)}
+    </div>
+    {moduleMode && <div className="generation-modules"><div className="generation-modules-head"><strong>模块范围</strong><span>{selectedModules.size ? `已选 ${selectedModules.size} 个；未选择则生成全部` : "未选择则生成全部模块"}</span></div><div className="generation-module-list">{nodes.sort((a, b) => Number(a.depth || 0) - Number(b.depth || 0)).map((node) => <label key={node.module_id} className="generation-module-row" style={{ paddingLeft: `${10 + Number(node.depth || 0) * 16}px` }}><input type="checkbox" checked={selectedModules.has(node.module_id)} onChange={() => toggleModule(node.module_id)} /><span><strong>{node.display_name || node.source_path || node.module_id}</strong><small>{node.source_path || "根模块"} · {node.is_leaf ? "叶子模块" : "层级汇总"}</small></span></label>)}{!nodes.length && <span className="generation-empty">完成一次代码分析后可选择模块。</span>}</div></div>}
+    {chapters.length > 0 && <div className="chapter-contract"><div><strong>{mode === "leaf-module" ? "叶子模块章节契约" : mode === "module-summary" ? "层级汇总章节契约" : "叶子 + 层级章节契约"}</strong><span>每篇文档严格按以下章节输出，证据不足时保留章节并标记无法确定。</span></div><ol>{chapters.map((chapter) => <li key={chapter}>{chapter}</li>)}</ol></div>}
+    {mode === "repository" && <div className="chapter-contract compact"><div><strong>仓库级章节</strong><span>读取模块树、模块快照和关系图，汇聚系统边界、依赖、数据流、调用流与证据限制。</span></div></div>}
+    <div className="generation-actions"><span>当前选择：{mode === "module" ? "叶子 + 层级汇总" : mode === "leaf-module" ? "叶子模块" : mode === "module-summary" ? "层级汇总" : "仓库级"}</span><button className="button primary" disabled={submitting || (moduleMode && !nodes.length)} onClick={submit}>{submitting ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}开始生成</button></div>
+  </section>;
+}
+
+function Repositories({ repositories, scope, moduleTree, select, onAdd, onGenerate, onIndex, onJobs, notify, refresh }: any) {
   const selected = repositories.find((item: any) => scope?.type === "repository" && item.id === scope.id);
   const [detail, setDetail] = useState<any>(null);
   const [tree, setTree] = useState<any[]>([]);
@@ -151,6 +215,7 @@ function Repositories({ repositories, scope, select, onAdd, onGenerate, onIndex,
   return <div className="repository-layout"><section className="card repo-list-panel"><CardTitle title="本地代码仓" eyebrow={`${repositories.length} REPOSITORIES`} action={<button className="icon-button" onClick={onAdd}><Plus size={16} /></button>} /><div className="repo-cards">{repositories.map((repo: any) => <button key={repo.id} className={selected?.id === repo.id ? "selected" : ""} onClick={() => select(repo)}><span className="repo-avatar">{repo.name.slice(0, 2).toUpperCase()}</span><span><strong>{repo.name}</strong><small>{repo.path}</small></span><StatusDot status={repo.status} /></button>)}</div></section><section className="detail-column">{selected && detail ? <>
     <section className="card repo-hero"><div className="repo-title"><span className="repo-avatar large">{selected.name.slice(0, 2).toUpperCase()}</span><div><span className="eyebrow">REGISTERED REPOSITORY</span><h2>{selected.name}</h2><p className="mono">{selected.path}</p></div><StatusBadge status={selected.status} /></div><div className="action-row"><button className="button primary" onClick={onGenerate}><Play size={15} />生成 Wiki</button><button className="button subtle" onClick={onIndex}><Database size={15} />重建索引</button><button className="button danger-text" onClick={remove}><Archive size={15} />移除注册</button></div></section>
     <section className="metric-row compact"><Metric icon={<Layers3 />} label="模块" value={detail.stats?.modules || 0} detail="层级模块节点" /><Metric icon={<FileCode2 />} label="源码文件" value={detail.stats?.files || 0} detail="编译数据库覆盖范围" /><Metric icon={<Braces />} label="符号" value={detail.stats?.symbols || 0} detail="函数、类型与宏" /><Metric icon={<Network />} label="关系" value={detail.stats?.relations || 0} detail="调用、包含与引用" /></section>
+    <DocumentGenerationPanel repositoryId={selected.id} moduleTree={moduleTree} notify={notify} onJobs={onJobs} />
     <div className="two-column repo-details"><section className="card"><CardTitle title="源码目录" eyebrow="READ-ONLY SOURCE TREE" /><FileTree nodes={tree} /></section><section className="card"><CardTitle title="生成与环境" eyebrow="CURRENT SNAPSHOT" /><DescriptionList rows={[["Git 分支", detail.git_branch || "未检测"], ["Git 提交", detail.git_commit || "未检测"], ["当前运行", detail.active_run_id || "尚未生成"], ["模型", detail.config?.model || "尚未配置"], ["叶子边界", (detail.config?.channel_module_paths || []).join(", ") || "自动识别"], ["索引状态", detail.index?.chunks ? `${detail.index.chunks} 个知识块` : "尚未索引"]]} /><label className="inline-setting"><span>模块生成并发</span><select value={String(detail.config?.module_generation_concurrency || 2)} onChange={(event) => updateConcurrency(event.target.value)}>{[1, 2, 3, 4].map((value) => <option key={value} value={value}>{value} 个叶子任务</option>)}</select><small>仅并发独立叶子模块；父级汇总和仓库级文档按依赖顺序执行。</small></label></section></div>
   </> : <Empty icon={<FolderGit2 />} title="请选择代码仓" text="从左侧列表选择一个代码仓查看详情。" />}</section></div>;
 }
@@ -324,9 +389,9 @@ function KnowledgeSearch({ scope, notify }: { scope: Scope; notify: Function }) 
 function KnowledgeAsk({ scope, notify }: { scope: Scope; notify: Function }) {
   const [conversation, setConversation] = useState<any>(null); const [turns, setTurns] = useState<any[]>([]); const [question, setQuestion] = useState(""); const [loading, setLoading] = useState(false);
   useEffect(() => { setConversation(null); setTurns([]); }, [scope?.type, scope?.id]);
-  const send = async (event: FormEvent) => { event.preventDefault(); if (!scope || !question.trim()) return; const text = question.trim(); setQuestion(""); setLoading(true); try { let current = conversation; if (!current) { current = await api.post("/api/conversations", { scope_type: scope.type, scope_id: scope.id, title: text.slice(0, 50) }); setConversation(current); } const turn = await api.post<any>(`/api/conversations/${current.id}/turns`, { question: text, limit: 12 }); setTurns((items) => [...items, turn]); } catch (e) { notify(message(e), true); setQuestion(text); } finally { setLoading(false); } };
+  const send = async (event: FormEvent) => { event.preventDefault(); if (!scope || !question.trim()) return; const text = question.trim(); setQuestion(""); setLoading(true); try { let current = conversation; if (!current) { current = await api.post("/api/conversations", { scope_type: scope.type, scope_id: scope.id, title: text.slice(0, 50) }); setConversation(current); } const turn = await api.post<any>(`/api/conversations/${current.id}/turns`, { question: text, limit: 12 }); setTurns((items) => [...items, turn]); } catch (error) { const detail = message(error); setTurns((items) => [...items, { id: `failed-${Date.now()}`, question: text, answer: "RAG 问答生成失败。", status: "failed", error: detail }]); notify(detail, true); setQuestion(text); } finally { setLoading(false); } };
   if (!scope) return <ScopeEmpty />;
-  return <div className="chat-shell"><section className="chat-main"><div className="chat-history">{!turns.length && <div className="chat-welcome"><span><Sparkles /></span><h2>询问当前{scope.type === "repository" ? "代码仓" : "知识空间"}</h2><p>每一轮都会重新执行混合检索，并使用固定引用编号构造证据上下文。</p><div className="prompt-cards">{["从调度到信道编码的关键调用链是什么？", "哪些模块依赖公共接口，证据在哪里？", "如果修改 DMRS 配置，影响范围有哪些？"].map((value) => <button key={value} onClick={() => setQuestion(value)}>{value}<ChevronRight size={14} /></button>)}</div></div>}{turns.map((turn, index) => <div className="turn" key={turn.id || index}><div className="question"><span>你</span><p>{turn.question}</p></div><div className={`answer ${turn.status === "validation_failed" ? "failed" : ""}`}><span><Sparkles size={15} /></span><div><ReactMarkdown remarkPlugins={[remarkGfm]}>{turn.answer || ""}</ReactMarkdown>{turn.citations?.length > 0 && <div className="citations"><strong>本轮证据</strong>{turn.citations.map((citation: any) => <button key={citation.citation_key}><b>[{citation.citation_key}]</b><span>{citation.title}<small>{citation.source_uri}</small></span></button>)}</div>}</div></div></div>)}{loading && <div className="answer loading"><span><LoaderCircle className="spin" size={15} /></span><div><strong>正在检索证据并调用 OpenCode…</strong><p>回答返回后会校验全部引用。</p></div></div>}</div><form className="chat-input" onSubmit={send}><textarea value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="输入一个基于当前代码仓的问题…" rows={2} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} /><button disabled={loading || !question.trim()}><Send size={18} /></button><small>答案仅依据本轮检索证据 · 模型认证由 OpenCode 管理</small></form></section><aside className="evidence-guide"><span className="eyebrow">CITATION CONTRACT</span><h3>引用说明</h3>{[["W", "仓库或集合 Wiki"], ["C", "源码与行号"], ["G", "编译器关系图"], ["M", "人工知识页"]].map(([key, text]) => <div key={key}><b>{key}</b><span>{text}</span></div>)}<p>候选关系不会被描述为确定调用。无法从证据回答时，系统会明确提示。</p></aside></div>;
+  return <div className="chat-shell"><section className="chat-main"><div className="chat-history">{!turns.length && <div className="chat-welcome"><span><Sparkles /></span><h2>询问当前{scope.type === "repository" ? "代码仓" : "知识空间"}</h2><p>每一轮都会重新执行混合检索，并使用固定引用编号构造证据上下文。</p><div className="prompt-cards">{["从调度到信道编码的关键调用链是什么？", "哪些模块依赖公共接口，证据在哪里？", "如果修改 DMRS 配置，影响范围有哪些？"].map((value) => <button key={value} onClick={() => setQuestion(value)}>{value}<ChevronRight size={14} /></button>)}</div></div>}{turns.map((turn, index) => <div className="turn" key={turn.id || index}><div className="question"><span>你</span><p>{turn.question}</p></div><div className={`answer ${turn.status === "validation_failed" || turn.status === "citation_validation_failed" || turn.status === "failed" ? "failed" : ""}`}><span><Sparkles size={15} /></span><div><ReactMarkdown remarkPlugins={[remarkGfm]}>{turn.answer || ""}</ReactMarkdown>{turn.error && <section className="rag-error"><strong><XCircle size={14} />生成失败原因</strong><pre>{turn.error}</pre><small>请检查 OpenCode CLI、模型标识、认证状态、工作目录和 stderr 日志路径。</small></section>}{turn.citations?.length > 0 && <div className="citations"><strong>本轮证据</strong>{turn.citations.map((citation: any) => <button key={citation.citation_key}><b>[{citation.citation_key}]</b><span>{citation.title}<small>{citation.source_uri}</small></span></button>)}</div>}</div></div></div>)}{loading && <div className="answer loading"><span><LoaderCircle className="spin" size={15} /></span><div><strong>正在检索证据并调用 OpenCode…</strong><p>回答返回后会校验全部引用。</p></div></div>}</div><form className="chat-input" onSubmit={send}><textarea value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="输入一个基于当前代码仓的问题…" rows={2} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} /><button disabled={loading || !question.trim()}><Send size={18} /></button><small>答案仅依据本轮检索证据 · 模型认证由 OpenCode 管理</small></form></section><aside className="evidence-guide"><span className="eyebrow">CITATION CONTRACT</span><h3>引用说明</h3>{[["W", "仓库或集合 Wiki"], ["C", "源码与行号"], ["G", "编译器关系图"], ["M", "人工知识页"]].map(([key, text]) => <div key={key}><b>{key}</b><span>{text}</span></div>)}<p>候选关系不会被描述为确定调用。无法从证据回答时，系统会明确提示。</p></aside></div>;
 }
 
 function Jobs({ jobs, notify, refresh }: any) {
