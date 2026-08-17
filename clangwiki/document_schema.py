@@ -113,8 +113,76 @@ DOCUMENT_SCHEMAS: dict[str, DocumentSchema] = {
     ),
 }
 
-# Compatibility for callers that used the pre-hierarchy module schema name.
-DOCUMENT_SCHEMAS["module"] = DOCUMENT_SCHEMAS["leaf-module"]
+# Navigation-first document contracts.  Generation is bottom-up, while an
+# Agent consumes these documents top-down: repository -> subsystem -> channel
+# -> leaf -> source facts.  Each level therefore owns a different information
+# architecture instead of sharing one generic chapter list.
+DOCUMENT_SCHEMAS.update(
+    {
+        "repository-guide": DocumentSchema(
+            purpose="作为 Agent 阅读代码仓的第一入口，把业务任务快速路由到正确子系统、信道和证据范围。",
+            sections=(
+                SectionSpec("仓库定位与分析范围", ("说明仓库目标、技术域、非目标范围、Git版本和静态分析覆盖。",)),
+                SectionSpec("快速任务导航", ("使用任务到目标文档的路由表，优先回答应该阅读哪里。",)),
+                SectionSpec("系统分层与模块地图", ("展示顶层模块、职责边界、上下游和直接子文档，不展开局部实现。",)),
+                SectionSpec("仓库级关键业务流程", ("仅描述跨越多个技术域的主流程，并把流程节点链接到下层文档。",)),
+                SectionSpec("公共接口与共享数据", ("列出跨域接口、共享上下文和公共数据契约，详细字段链接事实参考。",)),
+                SectionSpec("构建、运行与配置变体", ("说明CMake目标、编译宏、仿真/生产及软件/硬件路径差异。",)),
+                SectionSpec("分析覆盖与证据限制", ("列出未覆盖源码、失败翻译单元、候选关系和需要运行时确认的内容。",)),
+            ),
+        ),
+        "subsystem-guide": DocumentSchema(
+            purpose="作为技术域或子系统地图，把仓库级任务继续路由到信道、流程或功能模块。",
+            sections=(
+                SectionSpec("子系统定位与职责边界", ("说明整体位置、负责与不负责范围、输入输出和父级关系。",)),
+                SectionSpec("子模块导航", ("逐项给出直接子模块职责、适用问题、目标文档和不适用范围。",)),
+                SectionSpec("入口、出口与接口契约", ("说明对外入口、请求、输出、回调和共享上下文。",)),
+                SectionSpec("跨模块主流程", ("仅汇聚跨越多个直接子模块的流程，并在节点处链接子文档。",)),
+                SectionSpec("状态、时序与资源约束", ("说明跨模块状态、实时周期、并发、内存和硬件资源约束。",)),
+                SectionSpec("故障现象导航", ("使用现象到子模块的排查路由表，不复制叶子级断点清单。",)),
+                SectionSpec("跨模块修改影响", ("说明公共接口或子模块修改对兄弟模块和回归范围的影响。",)),
+                SectionSpec("证据边界与继续阅读", ("列出直接子文档、事实参考、缺失证据和下一步阅读路径。",)),
+            ),
+        ),
+        "channel-playbook": DocumentSchema(
+            purpose="恢复信道端到端业务，并把具体开发、配置和故障问题路由到信道下一级功能模块。",
+            sections=(
+                SectionSpec("信道定位与处理目标", ("说明协议信道定位、代码职责、数据来源、输出和新传/重传等范围。",)),
+                SectionSpec("功能子模块地图", ("列出直接功能子模块、输入输出、业务关键词、常见现象和文档链接。",)),
+                SectionSpec("端到端业务流程", ("按实际先后顺序汇聚信道主链路，节点下钻到叶子文档。",)),
+                SectionSpec("输入输出与数据契约", ("说明请求、运行时上下文、HARQ、缓冲区和最终输出契约。",)),
+                SectionSpec("配置与协议参数传播", ("说明配置产生、转换、缓存和最终消费位置，区分协议解释与仓库事实。",)),
+                SectionSpec("状态、HARQ与时序", ("说明新传重传、NDI/RV、Frame/Slot、任务和资源生命周期。",)),
+                SectionSpec("故障定位决策树", ("从信道级现象逐步路由到上游、叶子或下游模块，并给出确认方式。",)),
+                SectionSpec("开发任务路由", ("把典型修改需求映射到主叶子、关联叶子、风险和回归范围。",)),
+                SectionSpec("继续下钻与证据限制", ("列出直接叶子文档、外部关联模块和当前未覆盖链路。",)),
+            ),
+        ),
+        "leaf-engineering": DocumentSchema(
+            purpose="把一个内聚业务功能完整映射到领域约束、源码、调用链、数据、异常和修改验证方法。",
+            sections=(
+                SectionSpec("功能目标与责任边界", ("说明父流程位置、触发条件、输入输出以及负责与不负责范围。",)),
+                SectionSpec("领域原理与实现约束", ("只解释理解当前实现所需的协议、算法、实时、内存或硬件约束。",)),
+                SectionSpec("源码地图", ("使用文件-符号-作用表列出真实路径、行号和关键入口。",)),
+                SectionSpec("执行流程与调用链", ("描述入口、检查、计算、调用、分支、错误和输出，区分确定与候选调用。",)),
+                SectionSpec("数据结构与字段语义", ("说明关键结构和字段的创建者、写入者、读取者、传播和生命周期。",)),
+                SectionSpec("配置、宏与运行模式", ("说明配置来源、Feature宏、条件编译及软件/硬件和仿真/生产分支。",)),
+                SectionSpec("状态、时序与资源生命周期", ("说明状态、Frame/Slot、回调、线程、缓冲区和硬件任务生命周期。",)),
+                SectionSpec("异常路径与故障定位", ("按现象列出代码分支、检查位置、可见证据和验证方法，不虚构日志。",)),
+                SectionSpec("修改指南与影响分析", ("给出修改入口、接口和结构影响、兄弟模块、风险及回归范围。",)),
+                SectionSpec("测试与验证", ("列出可由仓库支持的单元、向量、仿真、集成、性能和回归方法。",)),
+                SectionSpec("相关文档与证据限制", ("链接父文档、相关叶子、事实参考和源码，并声明静态分析限制。",)),
+            ),
+        ),
+    }
+)
+
+# Backwards-compatible selectors and direct callers keep working, but every
+# new task is planned with the explicit navigation-oriented schema names.
+DOCUMENT_SCHEMAS["module"] = DOCUMENT_SCHEMAS["leaf-engineering"]
+DOCUMENT_SCHEMAS["leaf-module"] = DOCUMENT_SCHEMAS["leaf-engineering"]
+DOCUMENT_SCHEMAS["module-summary"] = DOCUMENT_SCHEMAS["subsystem-guide"]
+DOCUMENT_SCHEMAS["readme"] = DOCUMENT_SCHEMAS["repository-guide"]
 
 
 DOCUMENT_ROLE_RULES: dict[str, tuple[str, ...]] = {
@@ -136,6 +204,31 @@ DOCUMENT_ROLE_RULES: dict[str, tuple[str, ...]] = {
         "任何直接子文档缺失或被截断时，必须明确降低结论强度并说明汇总不完整。",
     ),
 }
+
+DOCUMENT_ROLE_RULES.update(
+    {
+        "repository-guide": (
+            "当前文档是 Agent 的仓库首读入口，优先提供任务路由、模块边界和分析覆盖，不写成源码摘要大全。",
+            "只展开跨技术域流程；局部实现必须链接到子系统、信道或叶子文档。",
+            "快速任务导航必须说明用户意图、首选文档、继续下钻方向和不适用范围。",
+        ),
+        "subsystem-guide": (
+            "当前文档是子系统导航地图，直接子文档是主要证据，原始源码只补充公共入口和接口契约。",
+            "必须同时提供任务路由和故障现象路由，帮助 Agent 选择正确子模块。",
+            "不得复制叶子函数清单、结构体字段或局部算法正文。",
+        ),
+        "channel-playbook": (
+            "当前文档恢复一个信道的端到端业务，并把每个处理阶段链接到对应功能叶子。",
+            "必须提供功能子模块地图、故障决策树和开发任务路由表。",
+            "只展开跨叶子的配置、状态、HARQ和时序关系，局部实现留在叶子工程文档。",
+        ),
+        "leaf-engineering": (
+            "当前文档是进入源码前的最深工程知识单元，结论主要来自本模块直接源码、Clang符号和关系。",
+            "必须保留真实文件路径、符号、行号、调用链、数据传播、异常路径和验证方法。",
+            "领域知识只用于解释仓库实现；没有代码、注释或工程资料支持时必须标记为推断或无法确认。",
+        ),
+    }
+)
 
 
 def get_document_schema(document_type: str) -> DocumentSchema:

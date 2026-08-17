@@ -48,11 +48,11 @@ def test_leaf_generation_runs_in_parallel_before_aggregate(tmp_path: Path, monke
         "parent": Module("parent", "Parent", [], [], source_path=".", child_ids=("a", "b"), is_leaf=False),
     }
     tasks = [
-        DocumentTask("leaf-a", "leaf-module", "A", "Modules/a.md", ("a",), hierarchy_role="leaf"),
-        DocumentTask("leaf-b", "leaf-module", "B", "Modules/b.md", ("b",), hierarchy_role="leaf"),
+        DocumentTask("leaf-a", "leaf-engineering", "A", "Modules/a.md", ("a",), hierarchy_role="leaf"),
+        DocumentTask("leaf-b", "leaf-engineering", "B", "Modules/b.md", ("b",), hierarchy_role="leaf"),
         DocumentTask(
-            "summary-parent", "module-summary", "Parent", "Modules/index.md", ("parent",),
-            hierarchy_role="aggregate", child_document_paths=("Modules/a.md", "Modules/b.md"),
+            "summary-parent", "subsystem-guide", "Parent", "Modules/index.md", ("parent",),
+            hierarchy_role="subsystem", child_document_paths=("Modules/a.md", "Modules/b.md"),
         ),
     ]
     events: list[dict[str, object]] = []

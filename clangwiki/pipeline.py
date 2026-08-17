@@ -18,7 +18,13 @@ from .io import read_json, write_json, write_text
 from .knowledge import build_knowledge
 from .models import AnalysisBundle, RunConfig, normalize_module_generation_concurrency
 from .opencode import OpenCodeRunner
-from .output import ensure_child_document_navigation, validate_markdown, write_document
+from .output import (
+    SYNTHESIS_DOCUMENT_TYPES,
+    ensure_child_document_navigation,
+    ensure_navigation_card,
+    validate_markdown,
+    write_document,
+)
 from .planner import plan_documents
 
 
@@ -144,7 +150,8 @@ class GenerationPipeline:
                     for relative_path in task.child_document_paths
                     if (self.config.output / relative_path).is_file()
                 }
-                if task.document_type == "module-summary":
+                markdown = ensure_navigation_card(markdown, task, modules)
+                if task.document_type in SYNTHESIS_DOCUMENT_TYPES:
                     markdown = ensure_child_document_navigation(
                         markdown,
                         task.output_relative_path,

@@ -23,12 +23,16 @@ def build_context(
     # even when source excerpts themselves are capped.
     evidence_budget = max(4_000, max_source_chars)
     has_children = bool(task.child_document_paths)
-    is_module_summary = task.document_type == "module-summary"
-    if is_module_summary:
-        # Parent documents are synthesis artifacts. Direct child documents get
-        # half the evidence budget while raw source is intentionally bounded so
-        # the model cannot silently regenerate leaf-level implementation notes.
+    synthesis_types = {"subsystem-guide", "channel-playbook", "repository-guide", "architecture"}
+    is_synthesis = task.document_type in synthesis_types
+    if task.document_type == "repository-guide":
+        ratios = {"files": 0.02, "children": 0.70, "symbols": 0.03, "relations": 0.20, "source": 0.05}
+    elif task.document_type == "subsystem-guide":
+        ratios = {"files": 0.03, "children": 0.60, "symbols": 0.07, "relations": 0.20, "source": 0.10}
+    elif task.document_type == "channel-playbook":
         ratios = {"files": 0.05, "children": 0.50, "symbols": 0.10, "relations": 0.20, "source": 0.15}
+    elif task.document_type == "architecture":
+        ratios = {"files": 0.03, "children": 0.55, "symbols": 0.08, "relations": 0.24, "source": 0.10}
     elif has_children:
         ratios = {"files": 0.10, "children": 0.30, "symbols": 0.17, "relations": 0.18, "source": 0.25}
     else:
@@ -68,7 +72,7 @@ def build_context(
                 f"### {module.display_name} (`{module.module_id}`)",
                 f"- 源码路径：`{module.source_path or '.'}`",
                 f"- 层级深度：{module.depth}",
-                f"- 节点类型：{'信道内叶子模块' if module.is_channel_child_leaf else '最小叶子模块' if module.is_leaf else '信道父级汇总模块' if module.is_channel_root else '父级汇总模块'}",
+                f"- 节点类型：{'信道内叶子工程单元' if module.is_channel_child_leaf else '叶子工程单元' if module.is_leaf else '信道任务手册节点' if module.is_channel_root else '子系统导航节点'}",
                 f"- 父模块：`{parent.module_id}`" if parent else "- 父模块：无",
                 "- 子模块：" + (", ".join(f"`{child_id}`" for child_id in module.child_ids) or "无"),
                 "- 本层直接拥有的源码文件：",
@@ -83,10 +87,10 @@ def build_context(
 
     blocks.extend(["", "## 已生成的直接子文档"])
     if task.child_document_paths:
-        if is_module_summary:
+        if is_synthesis:
             blocks.extend([
-                "> 本任务是层级汇总。以下子文档是主要证据，不得将其正文机械拼接到父文档。",
-                "> 最终文档的“Agent 开发导航”必须保留可下钻的直接子文档链接。",
+                "> 本任务是导航或层级综合文档。以下直接子文档是主要证据，不得将其正文机械拼接到上层文档。",
+                "> 最终文档必须在该层级的导航章节中保留可下钻的直接子文档链接。",
             ])
         available_children = {
             relative_path: generated_output_root / relative_path
@@ -115,7 +119,7 @@ def build_context(
                 blocks.append("> 该子文档因上下文预算被截断，汇总时必须在限制章节中说明。")
         truncation["直接子文档"] = (included_children, len(task.child_document_paths))
     else:
-        blocks.append("- 无。叶子模块应直接依据 Clang 事实和源码生成最小单元文档。")
+        blocks.append("- 无。叶子工程文档应直接依据 Clang 事实和源码建立业务知识到目标代码的映射。")
     blocks.extend(["", "## 符号事实"])
     symbol_lines = [
         f"- `{symbol.get('kind')}` `{symbol.get('qualified_name')}` — "

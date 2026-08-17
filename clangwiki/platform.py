@@ -22,7 +22,7 @@ from .registry import Registry, git_identity
 from .wiki import WikiService
 
 
-DOCUMENT_SCHEMA_VERSION = "2026.08-aord-hierarchy-v2"
+DOCUMENT_SCHEMA_VERSION = "2026.08-navigation-hierarchy-v3"
 SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"}
 EXCLUDED_DIRS = {".git", "build", "dist", "node_modules", "third_party", "vendor", ".clangwiki"}
 

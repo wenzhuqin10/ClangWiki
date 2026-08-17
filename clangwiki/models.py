@@ -16,7 +16,7 @@ MODULE_GENERATION_CONCURRENCY_ERROR = "模块生成并发数必须是 1 到 4 �
 def normalize_module_generation_concurrency(value: Any) -> int:
     """Return one validated fan-out value for every configuration entry point.
 
-    The setting controls only independent leaf-module ``opencode run`` calls.
+    The setting controls only independent leaf-engineering ``opencode run`` calls.
     Keeping the validation here prevents the CLI, HTTP API, persisted config and
     direct ``RunConfig`` users from silently applying different rules.
     """

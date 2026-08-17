@@ -82,11 +82,34 @@ def test_generated_documents_are_stored_in_module_knowledge_folders(tmp_path: Pa
         "# PDSCH Encoder\n\n## 模块概述\n这是一个用于测试的模块文档，包含源码职责、输入输出和可追溯证据。\n",
         encoding="utf-8",
     )
+    channel_output = output / "Modules" / "src" / "phy" / "pdsch"
+    channel_output.mkdir(parents=True, exist_ok=True)
+    (channel_output / "index.md").write_text("# PDSCH\n\n信道任务导航。\n", encoding="utf-8")
+    subsystem_output = output / "Modules" / "src" / "phy"
+    (subsystem_output / "index.md").write_text("# PHY\n\n子系统导航。\n", encoding="utf-8")
     output.mkdir(exist_ok=True)
     (output / "Architecture.md").write_text("# 系统架构\n\n## 系统目标与边界\n仓库级文档。\n", encoding="utf-8")
     knowledge = run_root / "knowledge"
     knowledge.mkdir(parents=True)
     (knowledge / "modules.json").write_text(json.dumps([
+        {
+            "module_id": "src--phy",
+            "display_name": "phy",
+            "source_path": "src/phy",
+            "child_ids": ["src--phy--pdsch"],
+            "direct_files": [],
+            "is_leaf": False,
+            "is_channel_root": False,
+        },
+        {
+            "module_id": "src--phy--pdsch",
+            "display_name": "pdsch",
+            "source_path": "src/phy/pdsch",
+            "child_ids": ["src--phy--pdsch--encoder"],
+            "direct_files": [],
+            "is_leaf": False,
+            "is_channel_root": True,
+        },
         {
             "module_id": "src--phy--pdsch--encoder",
             "display_name": "encoder",
@@ -105,12 +128,23 @@ def test_generated_documents_are_stored_in_module_knowledge_folders(tmp_path: Pa
     )
 
     documents = services.wiki.ingest_generated(repository["id"], run_id, run_root)
-    module_document = next(item for item in documents if item["module_id"])
+    module_document = next(
+        item
+        for item in documents
+        if item["module_id"] == "src--phy--pdsch--encoder"
+    )
     expected = run_root / "knowledge" / "documents" / "modules" / "src--phy--pdsch--encoder" / "index.md"
     assert expected.is_file()
     assert module_document["storage_path"] == expected.relative_to(run_root).as_posix()
     assert module_document["module_folder"] == expected.parent.relative_to(run_root).as_posix()
-    assert module_document["document_role"] == "leaf-module"
+    assert module_document["document_role"] == "leaf-engineering"
+
+    channel_document = next(item for item in documents if item["module_id"] == "src--phy--pdsch")
+    assert channel_document["document_role"] == "channel-playbook"
+    assert "/channels/" in f"/{channel_document['storage_path']}"
+    subsystem_document = next(item for item in documents if item["module_id"] == "src--phy")
+    assert subsystem_document["document_role"] == "subsystem-guide"
+    assert "/subsystems/" in f"/{subsystem_document['storage_path']}"
 
     services.indexer.index_repository(repository["id"], profile="balanced")
     chunk = services.database.one(

@@ -364,7 +364,7 @@ code, .mono { font-family: var(--mono); }
 .document-generation-card { display: grid; gap: 12px; }
 .document-generation-card .card-title { margin-bottom: 0; }
 .doc-status { color: var(--muted); font-size: 9px; }
-.generation-mode-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.generation-mode-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
 .generation-mode { display: grid; gap: 4px; min-height: 65px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2); padding: 10px; text-align: left; }
 .generation-mode:hover, .generation-mode.active { border-color: rgba(89,101,216,.42); background: var(--accent-soft); }
 .generation-mode strong { color: var(--text-2); font-size: 10.5px; }
@@ -388,12 +388,14 @@ code, .mono { font-family: var(--mono); }
 .chapter-contract span { color: var(--muted); font-size: 8.5px; }
 .chapter-contract ol { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px 20px; margin: 8px 0 0; padding-left: 18px; color: var(--text-2); font-size: 8.5px; line-height: 1.5; }
 .role-contract-grid { display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin-top: 9px; }
+.role-contract-grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .role-contract-grid p { margin: 0; border: 1px solid #e5e8f7; border-radius: 7px; background: #fff; padding: 7px 9px; color: var(--muted); font-size: 8.5px; line-height: 1.55; }
 .role-contract-grid b { color: var(--text-2); }
 .chapter-contract.compact { padding: 12px; }
 .generation-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; border-top: 1px solid var(--line); padding-top: 11px; }
 .generation-actions > span { color: var(--muted); font-size: 9px; }
-@media (max-width: 850px) { .generation-mode-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .chapter-contract ol { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 1050px) { .generation-mode-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 850px) { .generation-mode-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .chapter-contract ol, .role-contract-grid.three { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 620px) { .generation-mode-grid, .chapter-contract ol, .role-contract-grid { grid-template-columns: 1fr; } .chapter-contract > div:not(.role-contract-grid), .generation-actions { align-items: flex-start; flex-direction: column; } }
 .job-timeline { display: grid; gap: 0; margin-top: 17px; }
 .job-timeline > .eyebrow { margin-bottom: 7px; }

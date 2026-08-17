@@ -95,6 +95,7 @@ def _parser() -> argparse.ArgumentParser:
         "--only", action="append",
         choices=[
             "readme", "architecture", "module", "leaf-module", "module-summary",
+            "repository-guide", "subsystem-guide", "channel-playbook", "leaf-engineering",
             "data-structures", "call-flows", "api-reference",
         ],
         default=[],

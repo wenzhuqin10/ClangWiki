@@ -138,19 +138,21 @@ function Overview({ status, repositories, collections, jobs, onRepo, onView }: a
   </>;
 }
 
-const DOCUMENT_CHAPTERS = [
-  "模块概述", "领域背景", "系统交互关系", "任务流程", "核心实现",
-  "状态与时序", "调试与故障定位", "设计经验", "Agent 开发导航",
-];
+const DOCUMENT_CHAPTERS: Record<string, string[]> = {
+  "repository": ["仓库定位与分析范围", "快速任务导航", "系统分层与模块地图", "仓库级关键业务流程", "公共接口与共享数据", "构建、运行与配置变体", "分析覆盖与证据限制"],
+  "subsystem-guide": ["子系统定位与职责边界", "子模块导航", "入口、出口与接口契约", "跨模块主流程", "状态、时序与资源约束", "故障现象导航", "跨模块修改影响", "证据边界与继续阅读"],
+  "channel-playbook": ["信道定位与处理目标", "功能子模块地图", "端到端业务流程", "输入输出与数据契约", "配置与协议参数传播", "状态、HARQ与时序", "故障定位决策树", "开发任务路由", "继续下钻与证据限制"],
+  "leaf-engineering": ["功能目标与责任边界", "领域原理与实现约束", "源码地图", "执行流程与调用链", "数据结构与字段语义", "配置、宏与运行模式", "状态、时序与资源生命周期", "异常路径与故障定位", "修改指南与影响分析", "测试与验证", "相关文档与证据限制"],
+};
 
 function DocumentGenerationPanel({ repositoryId, moduleTree, notify, onJobs }: any) {
-  const [mode, setMode] = useState<"module" | "leaf-module" | "module-summary" | "repository">("module");
+  const [mode, setMode] = useState<"module" | "leaf-engineering" | "channel-playbook" | "subsystem-guide" | "repository">("module");
   const [selectedModules, setSelectedModules] = useState<Set<string>>(new Set());
   const [documents, setDocuments] = useState<any[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const nodes = Object.entries(moduleTree?.nodes || {}).map(([module_id, node]) => ({ module_id, ...(node as any) }));
   const moduleMode = mode !== "repository";
-  const chapters = mode === "repository" ? [] : DOCUMENT_CHAPTERS;
+  const chapters = DOCUMENT_CHAPTERS[mode] || [];
   const generatedCount = documents.filter((doc) => {
     const path = String(doc.relative_path || "");
     if (mode === "repository") return ["Architecture.md", "README.md"].includes(path);
@@ -171,7 +173,7 @@ function DocumentGenerationPanel({ repositoryId, moduleTree, notify, onJobs }: a
   const submit = async () => {
     setSubmitting(true);
     try {
-      const only = mode === "repository" ? ["architecture", "readme"] : [mode];
+      const only = mode === "repository" ? ["architecture", "repository-guide"] : [mode];
       const module_ids = moduleMode ? Array.from(selectedModules) : [];
       await api.post(`/api/repositories/${repositoryId}/generate`, { overrides: { only, module_ids } });
       notify("文档生成任务已进入队列，可在任务中心查看阶段和错误原因。");
@@ -185,16 +187,17 @@ function DocumentGenerationPanel({ repositoryId, moduleTree, notify, onJobs }: a
     <p className="section-intro">以信道根的下一层功能子模块作为叶子单元，先生成最小文档，再按依赖顺序向上汇聚；机器快照保持不可变。</p>
     <div className="generation-mode-grid">
       {[
-        ["module", "模块全量", "叶子文档 + 层级汇总"],
-        ["leaf-module", "叶子模块", "仅生成最小单元文档"],
-        ["module-summary", "层级汇总", "读取子文档向上总结"],
-        ["repository", "仓库级", "架构文档 + README"],
+        ["module", "完整知识路径", "叶子 → 信道 → 子系统"],
+        ["leaf-engineering", "叶子工程文档", "深入源码与业务实现"],
+        ["channel-playbook", "信道任务手册", "端到端流程与任务路由"],
+        ["subsystem-guide", "子系统导航", "模块地图与故障导航"],
+        ["repository", "仓库首读入口", "顶层导航 + 系统架构"],
       ].map(([value, title, detail]) => <button key={value} className={`generation-mode ${mode === value ? "active" : ""}`} onClick={() => { setMode(value as typeof mode); setSelectedModules(new Set()); }}><strong>{title}</strong><small>{detail}</small></button>)}
     </div>
-    {moduleMode && <div className="generation-modules"><div className="generation-modules-head"><strong>模块范围</strong><span>{selectedModules.size ? `已选 ${selectedModules.size} 个；未选择则生成全部` : "未选择则生成全部模块"}</span></div><div className="generation-module-list">{nodes.sort((a, b) => Number(a.depth || 0) - Number(b.depth || 0)).map((node) => <label key={node.module_id} className="generation-module-row" style={{ paddingLeft: `${10 + Number(node.depth || 0) * 16}px` }}><input type="checkbox" checked={selectedModules.has(node.module_id)} onChange={() => toggleModule(node.module_id)} /><span><strong>{node.display_name || node.source_path || node.module_id}</strong><small>{node.source_path || "根模块"} · {node.is_leaf ? "叶子模块" : "层级汇总"}</small></span></label>)}{!nodes.length && <span className="generation-empty">完成一次代码分析后可选择模块。</span>}</div></div>}
-    {chapters.length > 0 && <div className="chapter-contract"><div><strong>{mode === "leaf-module" ? "叶子模块九章契约" : mode === "module-summary" ? "层级汇总九章契约" : "叶子与层级统一九章契约"}</strong><span>章节名称一致，生成粒度不同。</span></div><ol>{chapters.map((chapter) => <li key={chapter}>{chapter}</li>)}</ol><div className="role-contract-grid"><p><b>叶子模块</b>保留文件、函数、结构体、配置和错误路径等源码细节。</p><p><b>层级汇总</b>提炼跨子模块关系、公共约束、主流程和下钻导航，禁止机械拼接子文档。</p></div></div>}
-    {mode === "repository" && <div className="chapter-contract compact"><div><strong>仓库级章节</strong><span>读取模块树、模块快照和关系图，汇聚系统边界、依赖、数据流、调用流与证据限制。</span></div></div>}
-    <div className="generation-actions"><span>当前选择：{mode === "module" ? "叶子 + 层级汇总" : mode === "leaf-module" ? "叶子模块" : mode === "module-summary" ? "层级汇总" : "仓库级"}</span><button className="button primary" disabled={submitting || (moduleMode && !nodes.length)} onClick={submit}>{submitting ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}开始生成</button></div>
+    {moduleMode && <div className="generation-modules"><div className="generation-modules-head"><strong>模块范围</strong><span>{selectedModules.size ? `已选 ${selectedModules.size} 个；未选择则生成全部` : "未选择则生成全部模块"}</span></div><div className="generation-module-list">{nodes.sort((a, b) => Number(a.depth || 0) - Number(b.depth || 0)).map((node) => <label key={node.module_id} className="generation-module-row" style={{ paddingLeft: `${10 + Number(node.depth || 0) * 16}px` }}><input type="checkbox" checked={selectedModules.has(node.module_id)} onChange={() => toggleModule(node.module_id)} /><span><strong>{node.display_name || node.source_path || node.module_id}</strong><small>{node.source_path || "根模块"} · {node.is_leaf ? "叶子工程" : node.is_channel_root ? "信道手册" : "子系统导航"}</small></span></label>)}{!nodes.length && <span className="generation-empty">完成一次代码分析后可选择模块。</span>}</div></div>}
+    {mode === "module" && <div className="chapter-contract"><div><strong>自底向上生成，自顶向下阅读</strong><span>每一级使用独立章节契约，不再强制统一九章。</span></div><div className="role-contract-grid three"><p><b>叶子工程</b>建立领域知识、调用链和源码之间的映射。</p><p><b>信道手册</b>恢复端到端业务并把任务路由到功能叶子。</p><p><b>子系统导航</b>根据任务和故障现象继续缩小代码范围。</p></div></div>}
+    {chapters.length > 0 && <div className="chapter-contract"><div><strong>{documentModeLabel(mode)}章节契约</strong><span>{documentModeDescription(mode)}</span></div><ol>{chapters.map((chapter) => <li key={chapter}>{chapter}</li>)}</ol></div>}
+    <div className="generation-actions"><span>当前选择：{documentModeLabel(mode)}</span><button className="button primary" disabled={submitting || (moduleMode && !nodes.length)} onClick={submit}>{submitting ? <LoaderCircle className="spin" size={15} /> : <Play size={15} />}开始生成</button></div>
   </section>;
 }
 
@@ -443,7 +446,9 @@ function statusLabel(status: string) { return ({ registered: "待生成", genera
 function activeJobCount(jobs: any[]) { return jobs.filter((item) => ["queued", "running"].includes(item.status)).length; }
 function jobTitle(kind: string) { return ({ generate: "仓库 Wiki 生成", index: "知识索引", collection_generate: "集合 Wiki 生成", analysis: "代码分析", ask: "知识问答" } as Record<string, string>)[kind] || kind; }
 function stageLabel(stage: string) { return ({ queued: "排队等待", start: "启动任务", prepare: "校验配置", cmake: "CMake 编译数据库", "cmake-fallback": "CMake 后备模式（部分分析）", clang: "Clang 静态分析", modules: "模块层级构建", plan: "文档任务规划", parallel: "叶子模块并发生成", context: "整理文档上下文", opencode: "OpenCode 文档生成", validate: "Markdown 校验", document: "写入模块文档", documents: "模块文档完成", graph: "关系图入库", wiki: "Wiki 快照登记", index: "构建混合索引", completed: "任务完成", failed: "任务失败", cancelled: "已取消", interrupted: "服务中断" } as Record<string, string>)[stage] || stage || "处理中"; }
-function documentRoleLabel(role: string) { return ({ "leaf-module": "叶子模块", "module-summary": "层级汇总", "repository-index": "仓库首页", "repository-architecture": "仓库架构", "fact-reference": "事实参考", "repository-document": "仓库文档" } as Record<string, string>)[role] || "生成文档"; }
+function documentModeLabel(mode: string) { return ({ module: "完整知识路径", "leaf-engineering": "叶子工程文档", "channel-playbook": "信道任务手册", "subsystem-guide": "子系统导航", repository: "仓库首读入口" } as Record<string, string>)[mode] || mode; }
+function documentModeDescription(mode: string) { return ({ "leaf-engineering": "面向目标源码的深入知识、异常分析与修改验证。", "channel-playbook": "面向信道端到端流程、故障决策和开发任务路由。", "subsystem-guide": "面向模块地图、跨模块流程和继续下钻。", repository: "面向 Agent 首次进入仓库时的全局定位与分析范围。" } as Record<string, string>)[mode] || ""; }
+function documentRoleLabel(role: string) { return ({ "leaf-engineering": "叶子工程", "channel-playbook": "信道手册", "subsystem-guide": "子系统导航", "repository-guide": "仓库导航", "collection-guide": "知识空间导航", "leaf-module": "叶子模块（旧版）", "module-summary": "层级汇总（旧版）", "repository-index": "仓库首页（旧版）", "repository-architecture": "仓库架构", "fact-reference": "事实参考", "repository-document": "仓库文档" } as Record<string, string>)[role] || "生成文档"; }
 function kindLabel(kind: string) { return ({ document: "Wiki 文档", manual: "人工知识", symbol: "代码符号", code: "源码", relation: "图关系", annotation: "批注" } as Record<string, string>)[kind] || kind; }
 function channelLabel(channel: string) { return ({ symbol: "符号命中", keyword: "全文召回", vector: "向量召回", graph: "图关系扩展" } as Record<string, string>)[channel] || channel; }
 function excerpt(content: string, term: string) { const clean = (content || "").replace(/[#`*|>]/g, " ").replace(/\s+/g, " ").trim(); const index = clean.toLowerCase().indexOf(term.toLowerCase()); const start = Math.max(0, index > 0 ? index - 90 : 0); return `${start > 0 ? "…" : ""}${clean.slice(start, start + 290)}${clean.length > start + 290 ? "…" : ""}`; }

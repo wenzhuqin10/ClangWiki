@@ -59,10 +59,11 @@ def test_pdsch_children_are_leaves_and_pdsch_is_parent_summary(tmp_path: Path):
     )
 
     tasks = plan_documents(modules, ("module",))
-    leaf_task_ids = [task.task_id for task in tasks if task.document_type == "leaf-module"]
-    assert "leaf-module-src--phy--pdsch--encoder" in leaf_task_ids
-    assert "leaf-module-src--phy--pdsch--mapping" in leaf_task_ids
-    pdsch_task = next(task for task in tasks if task.task_id == "module-summary-src--phy--pdsch")
+    leaf_task_ids = [task.task_id for task in tasks if task.document_type == "leaf-engineering"]
+    assert "leaf-engineering-src--phy--pdsch--encoder" in leaf_task_ids
+    assert "leaf-engineering-src--phy--pdsch--mapping" in leaf_task_ids
+    pdsch_task = next(task for task in tasks if task.task_id == "channel-playbook-src--phy--pdsch")
+    assert pdsch_task.document_type == "channel-playbook"
     assert pdsch_task.child_document_paths == (
         "Modules/src/phy/pdsch/encoder/index.md",
         "Modules/src/phy/pdsch/mapping/index.md",
@@ -70,7 +71,7 @@ def test_pdsch_children_are_leaves_and_pdsch_is_parent_summary(tmp_path: Path):
 
     leaf_tasks = plan_documents(modules, ("leaf-module",))
     assert leaf_tasks
-    assert all(task.document_type == "leaf-module" for task in leaf_tasks)
+    assert all(task.document_type == "leaf-engineering" for task in leaf_tasks)
     assert {task.module_ids[0] for task in leaf_tasks} == {
         "src--phy--pdsch--encoder",
         "src--phy--pdsch--mapping",
@@ -78,8 +79,11 @@ def test_pdsch_children_are_leaves_and_pdsch_is_parent_summary(tmp_path: Path):
 
     summary_tasks = plan_documents(modules, ("module-summary",))
     assert summary_tasks
-    assert all(task.document_type == "module-summary" for task in summary_tasks)
+    assert {task.document_type for task in summary_tasks} == {"channel-playbook", "subsystem-guide"}
     summary_ids = {task.module_ids[0] for task in summary_tasks}
     assert "src--phy--pdsch" in summary_ids
     assert "src--phy" in summary_ids
     assert "src" in summary_ids
+
+    repository_tasks = plan_documents(modules, ("repository-guide",))
+    assert [task.document_type for task in repository_tasks] == ["repository-guide"]

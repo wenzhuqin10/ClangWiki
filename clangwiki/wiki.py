@@ -34,13 +34,14 @@ class WikiService:
             document_id = f"doc:{repository_id}:{run_id}:{_digest(relative)}"
             module_id = module_by_document.get(_normalise_relative(relative))
             module_record = self._module_record(modules, module_id)
-            storage = _knowledge_document_path(run_root, module_id, relative)
+            document_role = _document_role(relative, module_record)
+            storage = _knowledge_document_path(run_root, module_id, relative, document_role)
             metadata = {
                 "doc_id": document_id,
                 "repo_id": repository_id,
                 "run_id": run_id,
                 "module_id": module_id,
-                "document_role": _document_role(relative, module_record),
+                "document_role": document_role,
                 "module_source_path": self._module_source_path(modules, module_id),
                 "source_paths": self._module_sources(modules, module_id),
                 "tags": [],
@@ -73,6 +74,7 @@ class WikiService:
         metadata = {
             "doc_id": document_id,
             "collection_id": collection_id,
+            "document_role": "collection-guide",
             "tags": ["跨仓汇总"],
             "storage_path": storage.relative_to(self.registry.collection_root(collection_id)).as_posix(),
             "module_folder": storage.parent.relative_to(self.registry.collection_root(collection_id)).as_posix(),
@@ -387,11 +389,15 @@ def _normalise_relative(value: str) -> str:
 def _document_role(relative_path: str, module: dict[str, Any] | None) -> str:
     if module is not None:
         if "is_leaf" in module:
-            return "leaf-module" if bool(module.get("is_leaf")) else "module-summary"
-        return "module-summary" if module.get("child_ids") else "leaf-module"
+            if bool(module.get("is_leaf")):
+                return "leaf-engineering"
+            if bool(module.get("is_channel_root")):
+                return "channel-playbook"
+            return "subsystem-guide"
+        return "subsystem-guide" if module.get("child_ids") else "leaf-engineering"
     name = Path(relative_path).name.casefold()
     return {
-        "readme.md": "repository-index",
+        "readme.md": "repository-guide",
         "architecture.md": "repository-architecture",
         "datastructures.md": "fact-reference",
         "callflows.md": "fact-reference",
@@ -421,14 +427,26 @@ def _safe_component(value: str, fallback: str = "root") -> str:
     return clean or fallback
 
 
-def _knowledge_document_path(run_root: Path, module_id: str | None, relative_path: str) -> Path:
+def _knowledge_document_path(
+    run_root: Path,
+    module_id: str | None,
+    relative_path: str,
+    document_role: str,
+) -> Path:
     base = run_root / "knowledge" / "documents"
     if module_id:
         # Module IDs are stable across a run and avoid collisions when two
         # modules happen to have the same display name.
-        folder = base / "modules" / _safe_component(module_id)
+        category = {
+            "subsystem-guide": "subsystems",
+            "channel-playbook": "channels",
+            "leaf-engineering": "modules",
+        }.get(document_role, "modules")
+        folder = base / category / _safe_component(module_id)
         filename = Path(relative_path.replace("\\", "/")).name or "index.md"
         return folder / _safe_component(filename, "index.md")
+    if document_role == "fact-reference":
+        return base / "facts" / _safe_relative_path(relative_path)
     return base / "repository" / _safe_relative_path(relative_path)
 
 
