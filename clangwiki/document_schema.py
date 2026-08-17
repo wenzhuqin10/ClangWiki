@@ -117,6 +117,27 @@ DOCUMENT_SCHEMAS: dict[str, DocumentSchema] = {
 DOCUMENT_SCHEMAS["module"] = DOCUMENT_SCHEMAS["leaf-module"]
 
 
+DOCUMENT_ROLE_RULES: dict[str, tuple[str, ...]] = {
+    "leaf-module": (
+        "当前文档是最小叶子单元，结论应主要来自本模块直接拥有的源码、符号和关系。",
+        "在“核心实现”中保留文件、函数、结构体、配置、错误路径和资源生命周期等可定位细节。",
+        "在“任务流程”中描述本模块内部的入口、调用顺序、数据变化和分支，不代替父级总结跨模块全流程。",
+        "每个重要实现结论尽量给出源码路径和符号；没有证据的领域解释必须标记为推断或无法确认。",
+        "叶子内部更深目录作为三级及以下内容组织，不再创建新的二级章节。",
+    ),
+    "module-summary": (
+        "当前文档是父级汇总，已生成的直接子文档是主要输入，本层直接源码只用于补充公共入口和协调逻辑。",
+        "九章均应提升到父模块粒度，重点提炼子模块组成、跨子模块关系、公共约束、主流程和下钻路径。",
+        "不得机械拼接或大段复制子文档，不得重复罗列每个叶子的全部函数、字段、文件和算法细节。",
+        "仅属于单个子模块的实现细节应使用一句话概括并链接对应子文档；跨两个及以上子模块的关系才在父级展开。",
+        "在“核心实现”中只总结父级公共入口、共享数据、协调机制和关键分界点，不写成叶子 API 清单。",
+        "在“调试与故障定位”中给出从父级现象到具体子模块的下钻顺序，不复制叶子级断点清单。",
+        "在“Agent 开发导航”中列出直接子文档及其相对路径，并把常见修改任务路由到相应子模块。",
+        "任何直接子文档缺失或被截断时，必须明确降低结论强度并说明汇总不完整。",
+    ),
+}
+
+
 def get_document_schema(document_type: str) -> DocumentSchema:
     try:
         return DOCUMENT_SCHEMAS[document_type]
@@ -143,3 +164,10 @@ def render_schema_instructions(document_type: str) -> str:
         "任何章节缺少足够证据时，仍须保留该章节，并明确写出“当前证据无法确定”以及需要补充的材料；不得为了填满章节而推测。",
     ])
     return "\n".join(lines)
+
+
+def render_document_role_instructions(document_type: str) -> str:
+    rules = DOCUMENT_ROLE_RULES.get(document_type)
+    if not rules:
+        return "当前文档按仓库级或事实参考级任务要求生成。"
+    return "\n".join(f"{index}. {rule}" for index, rule in enumerate(rules, start=1))

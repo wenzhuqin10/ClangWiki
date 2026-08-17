@@ -18,7 +18,7 @@ from .io import read_json, write_json, write_text
 from .knowledge import build_knowledge
 from .models import AnalysisBundle, RunConfig, normalize_module_generation_concurrency
 from .opencode import OpenCodeRunner
-from .output import validate_markdown, write_document
+from .output import ensure_child_document_navigation, validate_markdown, write_document
 from .planner import plan_documents
 
 
@@ -139,8 +139,19 @@ class GenerationPipeline:
                 self._emit("opencode", f"正在调用 OpenCode 生成：{task.title}", progress(current))
                 markdown = runner.generate(repo, context_file, stdout_log, stderr_log)
                 self._check_cancelled()
+                child_documents = {
+                    relative_path: (self.config.output / relative_path).read_text(encoding="utf-8", errors="replace")
+                    for relative_path in task.child_document_paths
+                    if (self.config.output / relative_path).is_file()
+                }
+                if task.document_type == "module-summary":
+                    markdown = ensure_child_document_navigation(
+                        markdown,
+                        task.output_relative_path,
+                        tuple(child_documents),
+                    )
                 self._emit("validate", f"正在校验 Markdown：{task.title}", progress(current))
-                validate_markdown(markdown, task.document_type)
+                validate_markdown(markdown, task.document_type, child_documents)
                 destination = write_document(self.config.output, task.output_relative_path, markdown, self.config.overwrite)
             except ClangWikiError as exc:
                 self._log(log, f"[FAILED] {task.task_id}; logs: {stdout_log}, {stderr_log}")

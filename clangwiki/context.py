@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .document_schema import render_schema_instructions
+from .document_schema import render_document_role_instructions, render_schema_instructions
 from .io import write_text
 from .models import AnalysisBundle, DocumentTask, Module
 
@@ -23,13 +23,17 @@ def build_context(
     # even when source excerpts themselves are capped.
     evidence_budget = max(4_000, max_source_chars)
     has_children = bool(task.child_document_paths)
-    budgets = {
-        "files": int(evidence_budget * 0.10),
-        "children": int(evidence_budget * (0.30 if has_children else 0.0)),
-        "symbols": int(evidence_budget * (0.17 if has_children else 0.20)),
-        "relations": int(evidence_budget * (0.18 if has_children else 0.25)),
-        "source": int(evidence_budget * (0.25 if has_children else 0.45)),
-    }
+    is_module_summary = task.document_type == "module-summary"
+    if is_module_summary:
+        # Parent documents are synthesis artifacts. Direct child documents get
+        # half the evidence budget while raw source is intentionally bounded so
+        # the model cannot silently regenerate leaf-level implementation notes.
+        ratios = {"files": 0.05, "children": 0.50, "symbols": 0.10, "relations": 0.20, "source": 0.15}
+    elif has_children:
+        ratios = {"files": 0.10, "children": 0.30, "symbols": 0.17, "relations": 0.18, "source": 0.25}
+    else:
+        ratios = {"files": 0.10, "children": 0.00, "symbols": 0.20, "relations": 0.25, "source": 0.45}
+    budgets = {name: int(evidence_budget * ratio) for name, ratio in ratios.items()}
     truncation: dict[str, tuple[int, int]] = {}
     selected_files = sorted({file for module_id in task.module_ids for file in modules[module_id].files})
     selected_symbols = [symbol for module_id in task.module_ids for symbol in modules[module_id].symbols]
@@ -44,6 +48,7 @@ def build_context(
         f"- 文档标题：{task.title}", f"- 输出路径：{task.output_relative_path}",
         f"- 输出语言：{language}", f"- 仓库：{repo}", f"- 层级角色：{task.hierarchy_role}",
         "", "## 文档章节契约", render_schema_instructions(task.document_type),
+        "", "## 当前层级生成规则", render_document_role_instructions(task.document_type),
         "", "## 证据使用规则",
         "1. 编译器证据：`certainty=compiler` 的符号和关系可表述为 Clang 分析确认的事实。",
         "2. 源码证据：源代码中直接可见的赋值、分支、日志和资源操作可表述为源码确认的事实。",
@@ -78,6 +83,11 @@ def build_context(
 
     blocks.extend(["", "## 已生成的直接子文档"])
     if task.child_document_paths:
+        if is_module_summary:
+            blocks.extend([
+                "> 本任务是层级汇总。以下子文档是主要证据，不得将其正文机械拼接到父文档。",
+                "> 最终文档的“Agent 开发导航”必须保留可下钻的直接子文档链接。",
+            ])
         available_children = {
             relative_path: generated_output_root / relative_path
             for relative_path in task.child_document_paths

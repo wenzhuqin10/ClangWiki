@@ -22,7 +22,7 @@ from .registry import Registry, git_identity
 from .wiki import WikiService
 
 
-DOCUMENT_SCHEMA_VERSION = "2026.08-aord"
+DOCUMENT_SCHEMA_VERSION = "2026.08-aord-hierarchy-v2"
 SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"}
 EXCLUDED_DIRS = {".git", "build", "dist", "node_modules", "third_party", "vendor", ".clangwiki"}
 
@@ -62,7 +62,13 @@ class PlatformGenerationService:
         previous_manifest = previous.get("manifest", {}) if previous else {}
         force = bool(config.get("force"))
         changed_paths = _changed_paths(previous_manifest.get("file_hashes", {}), current_hashes)
-        if previous and not force and not changed_paths and previous.get("config_hash") == config_hash:
+        if (
+            previous
+            and not force
+            and not changed_paths
+            and previous.get("config_hash") == config_hash
+            and previous.get("schema_version") == DOCUMENT_SCHEMA_VERSION
+        ):
             self.db.execute(
                 "UPDATE repositories SET status='ready',updated_at=? WHERE id=?",
                 (time.time(), repository_id),
@@ -241,6 +247,7 @@ class PlatformGenerationService:
         return {
             "agent": str(config.get("agent") or ""),
             "channel_module_paths": channel_paths,
+            "document_schema_version": DOCUMENT_SCHEMA_VERSION,
             "language": str(config.get("language") or "简体中文"),
             "leaf_module_paths": leaf_paths,
             "max_source_chars_per_task": int(config.get("max_source_chars_per_task") or 36000),

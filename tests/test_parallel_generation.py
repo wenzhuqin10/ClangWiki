@@ -63,7 +63,7 @@ def test_leaf_generation_runs_in_parallel_before_aggregate(tmp_path: Path, monke
         output.write_text(f"# Context {task.task_id}\n", encoding="utf-8")
         return output
 
-    def fake_validate(_markdown: str, _document_type: str) -> None:
+    def fake_validate(_markdown: str, _document_type: str, _child_documents=None) -> None:
         return None
 
     monkeypatch.setattr("clangwiki.pipeline.build_context", fake_context)

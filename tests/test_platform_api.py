@@ -8,7 +8,13 @@ from fastapi.testclient import TestClient
 
 from clangwiki.api import create_app
 from clangwiki.graph import GraphService
-from clangwiki.platform import PlatformGenerationService, _hash_json, _module_generation_concurrency, repository_file_hashes
+from clangwiki.platform import (
+    DOCUMENT_SCHEMA_VERSION,
+    PlatformGenerationService,
+    _hash_json,
+    _module_generation_concurrency,
+    repository_file_hashes,
+)
 
 
 def _repository(path: Path, name: str = "demo") -> Path:
@@ -86,6 +92,7 @@ def test_generated_documents_are_stored_in_module_knowledge_folders(tmp_path: Pa
             "display_name": "encoder",
             "source_path": "src/phy/pdsch/encoder",
             "direct_files": ["src/phy/pdsch/encoder/encode.c"],
+            "is_leaf": True,
         },
     ]), encoding="utf-8")
     services.database.execute(
@@ -103,6 +110,7 @@ def test_generated_documents_are_stored_in_module_knowledge_folders(tmp_path: Pa
     assert expected.is_file()
     assert module_document["storage_path"] == expected.relative_to(run_root).as_posix()
     assert module_document["module_folder"] == expected.parent.relative_to(run_root).as_posix()
+    assert module_document["document_role"] == "leaf-module"
 
     services.indexer.index_repository(repository["id"], profile="balanced")
     chunk = services.database.one(
@@ -314,7 +322,16 @@ def test_unchanged_generation_reuses_snapshot_and_restores_ready_status(tmp_path
     services.database.execute(
         "INSERT INTO runs(id,repository_id,status,config_hash,schema_version,artifact_path,manifest_json,created_at) "
         "VALUES(?,?,?,?,?,?,?,?)",
-        (run_id, repository["id"], "completed", config_hash, "test", str(run_root), json.dumps(manifest), time.time()),
+        (
+            run_id,
+            repository["id"],
+            "completed",
+            config_hash,
+            DOCUMENT_SCHEMA_VERSION,
+            str(run_root),
+            json.dumps(manifest),
+            time.time(),
+        ),
     )
     services.database.execute(
         "UPDATE repositories SET active_run_id=?,status='failed' WHERE id=?",

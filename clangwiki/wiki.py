@@ -33,12 +33,14 @@ class WikiService:
             title = _title(content, relative)
             document_id = f"doc:{repository_id}:{run_id}:{_digest(relative)}"
             module_id = module_by_document.get(_normalise_relative(relative))
+            module_record = self._module_record(modules, module_id)
             storage = _knowledge_document_path(run_root, module_id, relative)
             metadata = {
                 "doc_id": document_id,
                 "repo_id": repository_id,
                 "run_id": run_id,
                 "module_id": module_id,
+                "document_role": _document_role(relative, module_record),
                 "module_source_path": self._module_source_path(modules, module_id),
                 "source_paths": self._module_sources(modules, module_id),
                 "tags": [],
@@ -301,6 +303,13 @@ class WikiService:
         return []
 
     @staticmethod
+    def _module_record(modules: list[Any], module_id: str | None) -> dict[str, Any] | None:
+        for item in modules:
+            if isinstance(item, dict) and str(item.get("module_id")) == str(module_id):
+                return item
+        return None
+
+    @staticmethod
     def _module_source_path(modules: list[Any], module_id: str | None) -> str | None:
         for item in modules:
             if isinstance(item, dict) and str(item.get("module_id")) == str(module_id):
@@ -317,6 +326,7 @@ class WikiService:
             "relative_path": row.get("relative_path"), "module_id": row.get("module_id"),
             "evidence_level": row.get("evidence_level"), "immutable": bool(row.get("immutable")),
             "metadata": metadata,
+            "document_role": metadata.get("document_role"),
             "storage_path": metadata.get("storage_path"),
             "module_folder": metadata.get("module_folder"),
             "created_at": row["created_at"], "updated_at": row["updated_at"],
@@ -335,8 +345,11 @@ class WikiService:
 
 
 def _with_frontmatter(content: str, metadata: dict[str, Any]) -> str:
-    if content.startswith("---\n"):
-        return content
+    body = content
+    if body.startswith("---\n"):
+        closing = body.find("\n---\n", 4)
+        if closing >= 0:
+            body = body[closing + 5:]
     lines = ["---"]
     for key, value in metadata.items():
         if value is None:
@@ -346,7 +359,7 @@ def _with_frontmatter(content: str, metadata: dict[str, Any]) -> str:
             lines.extend(f"  - {item}" for item in value)
         else:
             lines.append(f"{key}: {value}")
-    lines.extend(["---", "", content.lstrip()])
+    lines.extend(["---", "", body.lstrip()])
     return "\n".join(lines)
 
 
@@ -369,6 +382,21 @@ def _safe_json(path: Path, fallback: Any) -> Any:
 def _normalise_relative(value: str) -> str:
     """Return a stable POSIX relative path for output-to-module matching."""
     return str(Path(value.replace("\\", "/"))).replace("\\", "/").lstrip("./")
+
+
+def _document_role(relative_path: str, module: dict[str, Any] | None) -> str:
+    if module is not None:
+        if "is_leaf" in module:
+            return "leaf-module" if bool(module.get("is_leaf")) else "module-summary"
+        return "module-summary" if module.get("child_ids") else "leaf-module"
+    name = Path(relative_path).name.casefold()
+    return {
+        "readme.md": "repository-index",
+        "architecture.md": "repository-architecture",
+        "datastructures.md": "fact-reference",
+        "callflows.md": "fact-reference",
+        "apireference.md": "fact-reference",
+    }.get(name, "repository-document")
 
 
 def _module_document_map(modules: list[Any]) -> dict[str, str]:
