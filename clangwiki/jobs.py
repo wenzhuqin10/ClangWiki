@@ -65,7 +65,12 @@ class PersistentJobManager:
             self.emit(job_id, event)
 
         try:
-            result = self.handlers[kind](scope_id, payload, emit, cancel)
+            handler_payload = dict(payload)
+            if kind == "generate":
+                overrides = dict(handler_payload.get("overrides") or {})
+                overrides["_job_id"] = job_id
+                handler_payload["overrides"] = overrides
+            result = self.handlers[kind](scope_id, handler_payload, emit, cancel)
             status = "cancelled" if cancel.is_set() else "completed"
             self._update(
                 job_id, status=status, stage=status,
@@ -74,12 +79,15 @@ class PersistentJobManager:
             )
         except Exception as exc:
             error = _failure_detail(exc)
+            status = "cancelled" if cancel.is_set() else "failed"
             self._update(
-                job_id, status="failed", stage="failed", message="任务执行失败：" + _one_line(str(exc)),
+                job_id, status=status, stage=status,
+                message="任务已取消" if status == "cancelled" else "任务执行失败：" + _one_line(str(exc)),
                 error=error, finished_at=time.time(),
             )
             self.emit(job_id, {
-                "stage": "failed", "message": "生成失败：" + _one_line(str(exc)),
+                "stage": status,
+                "message": "任务已取消" if status == "cancelled" else "生成失败：" + _one_line(str(exc)),
                 "progress": self.get(job_id)["progress"], "error": error,
             })
             traceback.print_exc()
@@ -112,6 +120,29 @@ class PersistentJobManager:
         if current["status"] not in {"failed", "cancelled", "interrupted"}:
             raise ValueError("只有失败、取消或中断的任务可以重试。")
         return self.start(current["kind"], current["scope_type"], current.get("scope_id"), current["payload"])
+
+    def resume(self, job_id: str) -> dict[str, Any]:
+        current = self.get(job_id)
+        if current["kind"] != "generate" or current["status"] not in {"failed", "cancelled", "interrupted"}:
+            raise ValueError("只有失败、取消或中断的仓库 Wiki 生成任务可以从断点继续。")
+        run_id = None
+        for row in self.db.all(
+            "SELECT id,status,artifact_path,manifest_json FROM runs WHERE repository_id=? ORDER BY created_at DESC",
+            (current.get("scope_id"),),
+        ):
+            manifest = json_loads(row.get("manifest_json"), {})
+            if manifest.get("job_id") != job_id:
+                continue
+            if row.get("status") in {"failed", "cancelled", "interrupted"} and row.get("artifact_path"):
+                run_id = str(row["id"])
+                break
+        if not run_id:
+            raise ValueError("该任务没有形成可恢复的文档断点，请使用“重新开始”。")
+        payload = dict(current["payload"])
+        overrides = dict(payload.get("overrides") or {})
+        overrides["resume_run_id"] = run_id
+        payload["overrides"] = overrides
+        return self.start(current["kind"], current["scope_type"], current.get("scope_id"), payload)
 
     def get(self, job_id: str) -> dict[str, Any]:
         row = self.db.one("SELECT * FROM jobs WHERE id=?", (job_id,))

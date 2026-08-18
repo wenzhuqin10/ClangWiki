@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
+import re
 import shutil
 import time
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -248,6 +251,14 @@ def create_app(data_root: Path, web_root: Path | None = None) -> FastAPI:
     def runs(repository_id: str) -> dict[str, Any]:
         return {"runs": services.generation.list_runs(repository_id)}
 
+    @app.post("/api/repositories/{repository_id}/runs/{run_id}/resume", status_code=202)
+    def resume_run(repository_id: str, run_id: str) -> dict[str, Any]:
+        services.registry.get_repository(repository_id)
+        return services.jobs.start(
+            "generate", "repository", repository_id,
+            {"overrides": {"resume_run_id": run_id}},
+        )
+
     @app.post("/api/repositories/{repository_id}/runs/{run_id}/activate")
     def activate_run(repository_id: str, run_id: str) -> dict[str, Any]:
         return services.generation.activate_run(repository_id, run_id)
@@ -342,6 +353,92 @@ def create_app(data_root: Path, web_root: Path | None = None) -> FastAPI:
     def document(document_id: str) -> dict[str, Any]:
         return services.wiki.get_document(document_id)
 
+    @app.get("/api/wiki/documents/{document_id}/export")
+    def export_document(document_id: str) -> Response:
+        value = services.wiki.get_document(document_id)
+        filename = _download_name(value.get("relative_path") or value.get("title") or "document.md")
+        return Response(
+            content=str(value.get("content") or ""),
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.get("/api/repositories/{repository_id}/documents/export")
+    def export_repository_documents(repository_id: str) -> Response:
+        repository = services.registry.get_repository(repository_id)
+        run = repository.get("active_run")
+        if not run:
+            raise ValueError("当前代码仓还没有可导出的 Wiki 快照。")
+        output = Path(run["artifact_path"]) / "output"
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for path in sorted(output.rglob("*.md")) if output.is_dir() else []:
+                archive.write(path, path.relative_to(output).as_posix())
+        if not buffer.tell():
+            raise ValueError("当前 Wiki 快照中没有 Markdown 文档。")
+        filename = _download_name(f"{repository['name']}-wiki.zip")
+        return Response(
+            content=buffer.getvalue(),
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.post("/api/repositories/{repository_id}/documents/publish")
+    def publish_repository_documents(repository_id: str) -> dict[str, Any]:
+        """Synchronise the active Markdown snapshot into a managed repo folder."""
+        repository = services.registry.get_repository(repository_id)
+        run = repository.get("active_run")
+        if not run:
+            raise ValueError("当前代码仓还没有可同步的 Wiki 快照。")
+        source_root = Path(run["artifact_path"]) / "output"
+        sources = sorted(source_root.rglob("*.md")) if source_root.is_dir() else []
+        if not sources:
+            raise ValueError("当前 Wiki 快照中没有 Markdown 文档。")
+
+        repository_root = Path(repository["path"]).expanduser().resolve()
+        target_root = (repository_root / "docs" / "clangwiki").resolve()
+        if not target_root.is_relative_to(repository_root):
+            raise ValueError("Wiki 同步目录必须位于已注册代码仓内。")
+        marker = target_root / ".clangwiki-export.json"
+        if target_root.is_dir() and any(target_root.iterdir()) and not marker.is_file():
+            raise ValueError(
+                "代码仓的 docs/clangwiki 已存在且不是 ClangWiki 管理目录；"
+                "为避免覆盖人工文件，请先移动或重命名该目录。"
+            )
+        target_root.mkdir(parents=True, exist_ok=True)
+        previous = _read_json(marker, {})
+        relative_files = [path.relative_to(source_root).as_posix() for path in sources]
+
+        for source, relative in zip(sources, relative_files):
+            destination = _safe_repository_export_path(target_root, relative)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            temporary = destination.with_name(f".{destination.name}.clangwiki.tmp")
+            shutil.copyfile(source, temporary)
+            temporary.replace(destination)
+
+        # Remove only stale files explicitly recorded by the previous export.
+        # Unknown/manual files in the managed folder are never deleted.
+        for relative in set(previous.get("files") or ()) - set(relative_files):
+            stale = _safe_repository_export_path(target_root, str(relative))
+            if stale.is_file():
+                stale.unlink()
+
+        manifest = {
+            "repository_id": repository_id,
+            "run_id": run["id"],
+            "exported_at": time.time(),
+            "files": relative_files,
+        }
+        temporary_marker = marker.with_suffix(".json.tmp")
+        temporary_marker.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary_marker.replace(marker)
+        return {
+            "repository_id": repository_id,
+            "run_id": run["id"],
+            "path": str(target_root),
+            "files": len(relative_files),
+        }
+
     @app.post("/api/wiki/pages", status_code=201)
     def create_manual_page(body: ManualPageCreate) -> dict[str, Any]:
         return services.wiki.create_manual_page(
@@ -404,6 +501,10 @@ def create_app(data_root: Path, web_root: Path | None = None) -> FastAPI:
     @app.post("/api/jobs/{job_id}/retry", status_code=202)
     def retry_job(job_id: str) -> dict[str, Any]:
         return services.jobs.retry(job_id)
+
+    @app.post("/api/jobs/{job_id}/resume", status_code=202)
+    def resume_job(job_id: str) -> dict[str, Any]:
+        return services.jobs.resume(job_id)
 
     @app.get("/api/jobs/{job_id}/events")
     async def job_events(job_id: str, after: int = 0) -> StreamingResponse:
@@ -526,6 +627,23 @@ def _read_json(path: Path, fallback: Any) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return fallback
+
+
+def _download_name(value: str) -> str:
+    name = Path(str(value).replace("\\", "/")).name or "document.md"
+    clean = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._")
+    if not clean:
+        clean = "document.md"
+    if "." not in clean and name.lower().endswith(".md"):
+        clean += ".md"
+    return clean
+
+
+def _safe_repository_export_path(root: Path, relative: str) -> Path:
+    candidate = (root / Path(*str(relative).replace("\\", "/").split("/"))).resolve()
+    if candidate == root or not candidate.is_relative_to(root):
+        raise ValueError("检测到非法 Wiki 文档相对路径。")
+    return candidate
 
 
 def _json_error(status_code: int, detail: str):

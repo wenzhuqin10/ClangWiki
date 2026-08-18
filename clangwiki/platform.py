@@ -41,6 +41,13 @@ class PlatformGenerationService:
         self.graph = graph
         self.wiki = wiki
         self.indexer = indexer
+        # A process restart cannot finish a run that was marked running.  Keep
+        # its artifacts as an explicit resumable checkpoint instead of leaving
+        # an ambiguous permanent running state.
+        self.db.execute(
+            "UPDATE runs SET status='interrupted',finished_at=? WHERE status='running'",
+            (time.time(),),
+        )
 
     def generate_repository(
         self,
@@ -50,7 +57,12 @@ class PlatformGenerationService:
         cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
         repository = self.registry.get_repository(repository_id)
-        config = {**repository["config"], **(overrides or {})}
+        provided_overrides = dict(overrides or {})
+        requested_resume_id = str(provided_overrides.get("resume_run_id") or "").strip()
+        resume_request = self.get_run(requested_resume_id) if requested_resume_id else None
+        original_overrides = dict((resume_request or {}).get("manifest", {}).get("request_overrides") or {})
+        effective_overrides = {**original_overrides, **provided_overrides}
+        config = {**repository["config"], **effective_overrides}
         model = str(config.get("model") or "").strip()
         if not model:
             raise ClangWikiError("仓库未配置 OpenCode 模型标识。")
@@ -58,12 +70,21 @@ class PlatformGenerationService:
         source_root = Path(repository["path"])
         current_hashes = repository_file_hashes(source_root)
         config_hash = _hash_json(self._generation_config(config))
+        resume_run_id = requested_resume_id
+        resume_source = (
+            self._validate_resume_source(repository_id, resume_run_id, current_hashes, config_hash)
+            if resume_run_id else None
+        )
         previous = repository.get("active_run")
         previous_manifest = previous.get("manifest", {}) if previous else {}
         force = bool(config.get("force"))
-        changed_paths = _changed_paths(previous_manifest.get("file_hashes", {}), current_hashes)
+        changed_paths = (
+            [] if resume_source
+            else _changed_paths(previous_manifest.get("file_hashes", {}), current_hashes)
+        )
         if (
             previous
+            and not resume_source
             and not force
             and not changed_paths
             and previous.get("config_hash") == config_hash
@@ -80,7 +101,16 @@ class PlatformGenerationService:
         run_id = f"run-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
         run_root = self.registry.run_root(repository_id, run_id)
         run_root.mkdir(parents=True, exist_ok=False)
-        if previous:
+        if resume_source:
+            resume_root = Path(resume_source["artifact_path"])
+            for name in ("build", "analysis", "knowledge", "tasks", "output"):
+                source = resume_root / name
+                if source.is_dir():
+                    shutil.copytree(source, run_root / name, dirs_exist_ok=True)
+            checkpoint = resume_root / "checkpoint.json"
+            if checkpoint.is_file():
+                shutil.copy2(checkpoint, run_root / "checkpoint.json")
+        elif previous:
             previous_root = Path(previous["artifact_path"])
             incremental = bool(changed_paths) and not self._requires_full_rebuild(changed_paths, previous_manifest, config_hash)
             # A document-only run still needs the previous snapshot as its
@@ -123,6 +153,12 @@ class PlatformGenerationService:
             "schema_version": DOCUMENT_SCHEMA_VERSION,
             "embedding_profile": config.get("embedding_profile", "balanced"),
             "module_generation_concurrency": concurrency,
+            "job_id": str(config.get("_job_id") or "") or None,
+            "resume_from_run_id": resume_source["id"] if resume_source else None,
+            "request_overrides": {
+                key: value for key, value in effective_overrides.items()
+                if key not in {"_job_id", "resume_run_id"}
+            },
         }
         now = time.time()
         self.db.execute(
@@ -148,12 +184,13 @@ class PlatformGenerationService:
                 max_source_chars_per_task=int(config.get("max_source_chars_per_task") or 36000),
                 module_generation_concurrency=concurrency,
                 overwrite=True,
-                skip_cmake=bool(config.get("skip_cmake", False)),
-                skip_analysis=bool(config.get("skip_analysis", False)),
+                skip_cmake=bool(config.get("skip_cmake", False) or resume_source),
+                skip_analysis=bool(config.get("skip_analysis", False) or resume_source),
                 only=tuple(config.get("only") or ()),
                 module_ids=tuple(module_ids),
                 leaf_module_paths=tuple(config.get("leaf_module_paths") or ()),
                 channel_module_paths=tuple(config.get("channel_module_paths") or ()),
+                resume=bool(resume_source),
             )
             outputs = GenerationPipeline(
                 run_config,
@@ -190,9 +227,16 @@ class PlatformGenerationService:
                 "graph": graph_result, "documents": len(documents), "index": index_result,
             }
         except Exception as exc:
+            failed_status = "cancelled" if cancel_event and cancel_event.is_set() else "failed"
+            checkpoint = _safe_json_file(run_root / "checkpoint.json")
             self.db.execute(
-                "UPDATE runs SET status='failed',manifest_json=?,finished_at=? WHERE id=?",
-                (json_dumps({**manifest, "error": str(exc)}), time.time(), run_id),
+                "UPDATE runs SET status=?,manifest_json=?,finished_at=? WHERE id=?",
+                (
+                    failed_status,
+                    json_dumps({**manifest, "error": str(exc), "checkpoint": checkpoint}),
+                    time.time(),
+                    run_id,
+                ),
             )
             # A failed/cancelled attempt remains visible in run history, but it
             # must not make an existing successful Wiki snapshot look unusable.
@@ -202,6 +246,38 @@ class PlatformGenerationService:
                 (repository_status, time.time(), repository_id),
             )
             raise
+
+    def _validate_resume_source(
+        self,
+        repository_id: str,
+        run_id: str,
+        current_hashes: dict[str, str],
+        config_hash: str,
+    ) -> dict[str, Any]:
+        run = self.get_run(run_id)
+        if run["repository_id"] != repository_id:
+            raise ClangWikiError("断点运行不属于当前代码仓。")
+        if run["status"] not in {"failed", "cancelled", "interrupted"}:
+            raise ClangWikiError("只能继续失败、取消或中断的 Wiki 运行。")
+        if run.get("schema_version") != DOCUMENT_SCHEMA_VERSION:
+            raise ClangWikiError("断点使用的文档架构版本已变化，请重新生成完整 Wiki。")
+        if run.get("config_hash") != config_hash:
+            raise ClangWikiError("生成配置已经变化，不能安全复用断点，请重新生成完整 Wiki。")
+        manifest = run.get("manifest") or {}
+        if manifest.get("file_hashes") != current_hashes:
+            raise ClangWikiError("代码仓内容在中断后已经变化，不能继续旧断点。")
+        root = Path(run["artifact_path"])
+        required = (
+            root / "build" / "compile_commands.json",
+            root / "analysis" / "diagnostics.json",
+            root / "analysis" / "files.json",
+            root / "analysis" / "symbols.json",
+            root / "analysis" / "relations.json",
+            root / "tasks" / "tasks.json",
+        )
+        if not all(path.is_file() for path in required):
+            raise ClangWikiError("该运行在文档规划前中断，没有可继续的文档断点，请重新开始。")
+        return run
 
     def list_runs(self, repository_id: str) -> list[dict[str, Any]]:
         self.registry.get_repository(repository_id)
@@ -233,6 +309,20 @@ class PlatformGenerationService:
     def _public_run(row: dict[str, Any]) -> dict[str, Any]:
         result = dict(row)
         result["manifest"] = json_loads(result.pop("manifest_json"), {})
+        root = Path(result["artifact_path"])
+        checkpoint = _safe_json_file(root / "checkpoint.json")
+        result["resumable"] = (
+            result["status"] in {"failed", "cancelled", "interrupted"}
+            and result.get("schema_version") == DOCUMENT_SCHEMA_VERSION
+            and bool(checkpoint.get("completed_task_ids"))
+            and (root / "build" / "compile_commands.json").is_file()
+            and (root / "analysis" / "diagnostics.json").is_file()
+            and (root / "analysis" / "files.json").is_file()
+            and (root / "analysis" / "symbols.json").is_file()
+            and (root / "analysis" / "relations.json").is_file()
+            and (root / "tasks" / "tasks.json").is_file()
+        )
+        result["checkpoint"] = checkpoint
         return result
 
     @staticmethod
@@ -448,6 +538,14 @@ def _file_hash(path: Path) -> str:
 
 def _hash_json(value: Any) -> str:
     return hashlib.sha256(json_dumps(value).encode("utf-8")).hexdigest()
+
+
+def _safe_json_file(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def _module_generation_concurrency(value: Any) -> int:

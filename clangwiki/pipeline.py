@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable
@@ -122,7 +123,13 @@ class GenerationPipeline:
         document_span = 52
         completed = 0
         completed_lock = threading.Lock()
+        checkpoint_lock = threading.Lock()
         destinations: dict[str, Path] = {}
+        checkpoint_path = workspace / "checkpoint.json"
+        checkpoint = self._read_checkpoint(checkpoint_path) if self.config.resume else {}
+        completed_task_ids = {
+            str(task_id) for task_id in checkpoint.get("completed_task_ids", [])
+        }
 
         def progress(value: int) -> int:
             return 42 + int(value / total * document_span)
@@ -130,6 +137,18 @@ class GenerationPipeline:
         def generate_task(task) -> tuple[str, Path]:
             nonlocal completed
             self._check_cancelled()
+            existing = self.config.output / task.output_relative_path
+            if task.task_id in completed_task_ids and existing.is_file():
+                with completed_lock:
+                    completed += 1
+                    done = completed
+                self._log(log, f"[RESUME] reused completed task: {task.task_id}")
+                self._emit(
+                    "resume",
+                    f"断点恢复：跳过已完成文档（{done}/{total}）：{task.title}",
+                    progress(done),
+                )
+                return task.task_id, existing
             with completed_lock:
                 current = completed
             self._emit("context", f"正在整理上下文（{current + 1}/{total}）：{task.title}", progress(current))
@@ -166,6 +185,15 @@ class GenerationPipeline:
             with completed_lock:
                 completed += 1
                 done = completed
+            with checkpoint_lock:
+                completed_task_ids.add(task.task_id)
+                self._write_checkpoint(checkpoint_path, {
+                    "version": 1,
+                    "completed_task_ids": sorted(completed_task_ids),
+                    "completed": len(completed_task_ids),
+                    "total": total,
+                    "updated_at": time.time(),
+                })
             self._log(log, f"[OUTPUT] {destination}")
             self._emit("document", f"已生成（{done}/{total}）：{task.title}", progress(done))
             return task.task_id, destination
@@ -198,6 +226,21 @@ class GenerationPipeline:
             task_id, destination = generate_task(task)
             destinations[task_id] = destination
         return [destinations[task.task_id] for task in tasks]
+
+    @staticmethod
+    def _read_checkpoint(path: Path) -> dict[str, object]:
+        try:
+            value = read_json(path)
+        except (OSError, ValueError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _write_checkpoint(path: Path, value: dict[str, object]) -> None:
+        """Atomically replace the checkpoint so a process interruption cannot truncate it."""
+        temporary = path.with_suffix(f"{path.suffix}.tmp")
+        write_json(temporary, value)
+        temporary.replace(path)
 
     def _compilation_database(self, repo: Path) -> tuple[Path, str | None]:
         build_dir = self.config.build_dir.expanduser().resolve()

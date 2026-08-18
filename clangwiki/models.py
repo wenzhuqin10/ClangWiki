@@ -55,6 +55,7 @@ class RunConfig:
     module_ids: tuple[str, ...] = ()
     leaf_module_paths: tuple[str, ...] = ()
     channel_module_paths: tuple[str, ...] = ()
+    resume: bool = False
 
     def __post_init__(self) -> None:
         # RunConfig is also used by the legacy one-shot CLI, so it must enforce

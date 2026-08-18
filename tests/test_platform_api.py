@@ -4,9 +4,11 @@ import json
 import time
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from clangwiki.api import create_app
+from clangwiki.errors import ClangWikiError
 from clangwiki.graph import GraphService
 from clangwiki.platform import (
     DOCUMENT_SCHEMA_VERSION,
@@ -71,7 +73,8 @@ def test_manual_knowledge_is_searchable_before_first_generation(tmp_path: Path) 
 def test_generated_documents_are_stored_in_module_knowledge_folders(tmp_path: Path) -> None:
     app = create_app(tmp_path / "data")
     client = TestClient(app)
-    repository = client.post("/api/repositories", json={"path": str(_repository(tmp_path))}).json()
+    repository_root = _repository(tmp_path)
+    repository = client.post("/api/repositories", json={"path": str(repository_root)}).json()
     services = app.state.services
     run_id = "run-module-documents"
     run_root = services.registry.run_root(repository["id"], run_id)
@@ -154,6 +157,30 @@ def test_generated_documents_are_stored_in_module_knowledge_folders(tmp_path: Pa
     metadata = json.loads(chunk["metadata_json"])
     assert metadata["module_folder"] == module_document["module_folder"]
     assert metadata["storage_path"] == module_document["storage_path"]
+
+    exported = client.get(f"/api/wiki/documents/{module_document['id']}/export")
+    assert exported.status_code == 200
+    assert "PDSCH Encoder" in exported.text
+    exported_all = client.get(f"/api/repositories/{repository['id']}/documents/export")
+    assert exported_all.status_code == 200
+    assert exported_all.headers["content-type"] == "application/zip"
+    assert exported_all.content.startswith(b"PK")
+
+    published = client.post(f"/api/repositories/{repository['id']}/documents/publish")
+    assert published.status_code == 200
+    assert published.json()["run_id"] == run_id
+    assert published.json()["files"] == len(list(output.rglob("*.md")))
+    repository_wiki = repository_root / "docs" / "clangwiki"
+    assert (repository_wiki / "Architecture.md").is_file()
+    assert (repository_wiki / "Modules" / "src" / "phy" / "pdsch" / "encoder" / "index.md").is_file()
+    export_manifest = json.loads((repository_wiki / ".clangwiki-export.json").read_text(encoding="utf-8"))
+    assert export_manifest["run_id"] == run_id
+
+    # A subsequent synchronisation must preserve unknown engineer-authored files.
+    manual_note = repository_wiki / "engineering-note.md"
+    manual_note.write_text("keep me\n", encoding="utf-8")
+    assert client.post(f"/api/repositories/{repository['id']}/documents/publish").status_code == 200
+    assert manual_note.read_text(encoding="utf-8") == "keep me\n"
 
 
 def test_graph_and_logical_collection_keep_repositories_isolated(tmp_path: Path) -> None:
@@ -377,3 +404,46 @@ def test_unchanged_generation_reuses_snapshot_and_restores_ready_status(tmp_path
     assert result["reused"] is True
     assert result["run"]["id"] == run_id
     assert services.registry.get_repository(repository["id"])["status"] == "ready"
+
+
+def test_failed_document_run_exposes_safe_resume_checkpoint(tmp_path: Path) -> None:
+    app = create_app(tmp_path / "data")
+    client = TestClient(app)
+    repository_root = _repository(tmp_path)
+    repository = client.post("/api/repositories", json={
+        "path": str(repository_root), "config": {"model": "test/model"},
+    }).json()
+    services = app.state.services
+    run_id = "run-resumable"
+    run_root = services.registry.run_root(repository["id"], run_id)
+    for relative in (
+        "build/compile_commands.json", "analysis/diagnostics.json", "analysis/files.json",
+        "analysis/symbols.json", "analysis/relations.json", "tasks/tasks.json",
+    ):
+        target = run_root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("[]" if target.name != "diagnostics.json" else "{}", encoding="utf-8")
+    (run_root / "checkpoint.json").write_text(json.dumps({
+        "completed_task_ids": ["leaf-a"], "completed": 1, "total": 3,
+    }), encoding="utf-8")
+    canonical = PlatformGenerationService._generation_config(repository["config"])
+    config_hash = _hash_json(canonical)
+    manifest = {"file_hashes": repository_file_hashes(repository_root), "request_overrides": {}}
+    services.database.execute(
+        "INSERT INTO runs(id,repository_id,status,config_hash,schema_version,artifact_path,manifest_json,created_at) "
+        "VALUES(?,?,?,?,?,?,?,?)",
+        (run_id, repository["id"], "interrupted", config_hash, DOCUMENT_SCHEMA_VERSION, str(run_root), json.dumps(manifest), time.time()),
+    )
+
+    run = services.generation.list_runs(repository["id"])[0]
+    assert run["resumable"] is True
+    assert run["checkpoint"]["completed"] == 1
+    assert services.generation._validate_resume_source(
+        repository["id"], run_id, repository_file_hashes(repository_root), config_hash,
+    )["id"] == run_id
+
+    (repository_root / "src" / "demo.c").write_text("int changed(void) { return 1; }\n", encoding="utf-8")
+    with pytest.raises(ClangWikiError, match="代码仓内容"):
+        services.generation._validate_resume_source(
+            repository["id"], run_id, repository_file_hashes(repository_root), config_hash,
+        )
