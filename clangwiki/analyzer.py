@@ -65,8 +65,8 @@ class ClangAnalyzer:
         bundle = AnalysisBundle(mode="partial")
         if compiler is not None:
             try:
-                self._run_compiler_analyzer(compiler, repo, compilation_database, bundle)
-                bundle.mode = "full"
+                complete = self._run_compiler_analyzer(compiler, repo, compilation_database, bundle)
+                bundle.mode = "full" if complete else "partial"
             except (OSError, subprocess.SubprocessError, json.JSONDecodeError, AnalysisError) as exc:
                 bundle.diagnostics.append(f"libclang analyzer failed; lexical augmentation used: {exc}")
         else:
@@ -84,7 +84,7 @@ class ClangAnalyzer:
         found = shutil.which("clangwiki-analyzer") or shutil.which("cpp-analyzer")
         return Path(found) if found else None
 
-    def _run_compiler_analyzer(self, executable: Path, repo: Path, compdb: Path, bundle: AnalysisBundle) -> None:
+    def _run_compiler_analyzer(self, executable: Path, repo: Path, compdb: Path, bundle: AnalysisBundle) -> bool:
         entries = json.loads(compdb.read_text(encoding="utf-8"))
         units = []
         for item in entries:
@@ -101,6 +101,8 @@ class ClangAnalyzer:
         )
         if process.returncode != 0:
             raise AnalysisError(process.stderr.strip() or f"exit code {process.returncode}")
+        analyzer_warnings = [line.strip() for line in process.stderr.splitlines() if line.strip()]
+        bundle.diagnostics.extend(f"libclang: {line}" for line in analyzer_warnings)
         for raw in process.stdout.splitlines():
             if not raw.strip():
                 continue
@@ -109,6 +111,11 @@ class ClangAnalyzer:
                 bundle.symbols.append(record)
             elif record.get("record") == "relation":
                 bundle.relations.append(record)
+        return not any(
+            marker in line.lower()
+            for line in analyzer_warnings
+            for marker in ("failed to parse", "no compile command", "cannot enter")
+        )
 
     def _lexical_augment(self, repo: Path, bundle: AnalysisBundle) -> None:
         existing_files = {row.get("file_path") for row in bundle.symbols}

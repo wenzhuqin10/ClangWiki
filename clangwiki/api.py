@@ -103,6 +103,15 @@ class TurnCreate(StrictModel):
     limit: int = 12
 
 
+class GraphPathRequest(StrictModel):
+    source_id: str
+    target_id: str
+    max_depth: int = Field(default=8, ge=1, le=20)
+    directed: bool = True
+    kinds: list[str] | None = None
+    include_candidates: bool = False
+
+
 class SettingsUpdate(StrictModel):
     values: dict[str, Any]
 
@@ -132,6 +141,7 @@ def build_services(data_root: Path) -> PlatformServices:
     jobs = PersistentJobManager(database)
     jobs.register("generate", lambda scope, payload, emit, cancel: generation.generate_repository(scope, payload.get("overrides", payload), emit, cancel))
     jobs.register("index", lambda scope, payload, emit, cancel: _index_job(indexer, scope, payload, emit, cancel))
+    jobs.register("graph", lambda scope, payload, emit, cancel: _graph_job(graph, scope, payload, emit, cancel))
     jobs.register("collection_generate", lambda scope, payload, emit, cancel: collection_generation.generate(scope, payload.get("overrides", payload), emit, cancel))
     return PlatformServices(database, registry, graph, wiki, indexer, generation, collection_generation, rag, jobs)
 
@@ -315,9 +325,16 @@ def create_app(data_root: Path, web_root: Path | None = None) -> FastAPI:
         scope_type: Literal["repository", "collection"], scope_id: str,
         level: Literal["repository", "module", "file", "symbol"] = "module",
         kinds: list[str] | None = Query(default=None), certainty: str | None = None,
-        limit: int = 2500,
+        limit: int = 250, view: str | None = None,
+        layers: list[str] | None = Query(default=None),
+        statuses: list[str] | None = Query(default=None),
+        community_id: str | None = None, min_degree: int = 0,
     ) -> dict[str, Any]:
-        return services.graph.graph(scope_type, scope_id, level, kinds, certainty, limit)
+        return services.graph.graph(
+            scope_type, scope_id, level, kinds, certainty, min(max(limit, 1), 2500),
+            view=view, layers=layers, statuses=statuses, community_id=community_id,
+            min_degree=max(0, min_degree),
+        )
 
     @app.get("/api/graph/neighbors")
     def graph_neighbors(
@@ -328,14 +345,77 @@ def create_app(data_root: Path, web_root: Path | None = None) -> FastAPI:
         scope_type: Literal["repository", "collection"] | None = None,
         scope_id: str | None = None,
         level: Literal["repository", "module", "file", "symbol"] = "symbol",
+        direction: Literal["incoming", "outgoing", "both"] = "both",
+        include_candidates: bool = False,
     ) -> dict[str, Any]:
         return services.graph.neighbors(
-            node_id, depth, kinds, limit, scope_type=scope_type, scope_id=scope_id, level=level,
+            node_id, depth, kinds, min(limit, 500), scope_type=scope_type, scope_id=scope_id,
+            level=level, direction=direction, include_candidates=include_candidates,
         )
 
     @app.get("/api/graph/path")
     def graph_path(source_id: str, target_id: str, max_depth: int = 8) -> dict[str, Any]:
         return services.graph.shortest_path(source_id, target_id, max_depth)
+
+    @app.post("/api/graph/path")
+    def graph_path_advanced(body: GraphPathRequest) -> dict[str, Any]:
+        return services.graph.shortest_path(
+            body.source_id, body.target_id, body.max_depth, directed=body.directed,
+            kinds=body.kinds, include_candidates=body.include_candidates,
+        )
+
+    @app.get("/api/graph/nodes/{node_id}")
+    def graph_node(node_id: str) -> dict[str, Any]:
+        return services.graph.node_detail(node_id)
+
+    @app.get("/api/graph/edges/{edge_id}")
+    def graph_edge(edge_id: str) -> dict[str, Any]:
+        return services.graph.edge_detail(edge_id)
+
+    @app.get("/api/graph/snapshots")
+    def graph_snapshots(repository_id: str) -> dict[str, Any]:
+        return {"runs": services.graph.snapshot_runs(repository_id)}
+
+    @app.get("/api/graph/communities")
+    def graph_communities(repository_id: str) -> dict[str, Any]:
+        return {"communities": services.graph.communities(repository_id)}
+
+    @app.get("/api/graph/hubs")
+    def graph_hubs(repository_id: str, limit: int = 30) -> dict[str, Any]:
+        return {"nodes": services.graph.ranked_nodes(repository_id, "hub", min(limit, 100))}
+
+    @app.get("/api/graph/bridges")
+    def graph_bridges(repository_id: str, limit: int = 30) -> dict[str, Any]:
+        return {"nodes": services.graph.ranked_nodes(repository_id, "bridge", min(limit, 100))}
+
+    @app.get("/api/graph/orphans")
+    def graph_orphans(repository_id: str, limit: int = 30) -> dict[str, Any]:
+        return {"nodes": services.graph.ranked_nodes(repository_id, "orphan", min(limit, 100))}
+
+    @app.get("/api/graph/cycles")
+    def graph_cycles(repository_id: str, limit: int = 30) -> dict[str, Any]:
+        return {"cycles": services.graph.cycles(repository_id, min(limit, 100))}
+
+    @app.get("/api/graph/diagnostics")
+    def graph_diagnostics(repository_id: str) -> dict[str, Any]:
+        return services.graph.diagnostics(repository_id)
+
+    @app.get("/api/graph/diff")
+    def graph_diff(repository_id: str, from_run_id: str, to_run_id: str) -> dict[str, Any]:
+        return services.graph.diff(repository_id, from_run_id, to_run_id)
+
+    @app.get("/api/graph/export.graphml")
+    def graph_export(scope_type: Literal["repository", "collection"], scope_id: str, level: str = "symbol") -> Response:
+        return Response(
+            services.graph.export_graphml(scope_type, scope_id, level),
+            media_type="application/graphml+xml",
+            headers={"Content-Disposition": 'attachment; filename="clangwiki-graph.graphml"'},
+        )
+
+    @app.post("/api/repositories/{repository_id}/graph/rebuild", status_code=202)
+    def rebuild_graph(repository_id: str, body: JobRequest) -> dict[str, Any]:
+        services.registry.get_repository(repository_id)
+        return services.jobs.start("graph", "repository", repository_id, body.overrides)
 
     @app.patch("/api/graph/edges/{edge_id}")
     def confirm_edge(edge_id: str, confirmed: bool) -> dict[str, Any]:
@@ -552,6 +632,22 @@ def _index_job(indexer: IndexService, repository_id: str, payload: dict[str, Any
     emit({"stage": "chunk", "message": "正在切分文档、源码与图关系", "progress": 15})
     result = indexer.index_repository(repository_id, payload.get("embedding_profile"))
     emit({"stage": "index", "message": "知识索引构建完成", "progress": 100})
+    return result
+
+
+def _graph_job(graph: GraphService, repository_id: str, payload: dict[str, Any], emit, cancel) -> dict[str, Any]:
+    emit({"stage": "graph", "message": "正在从当前分析快照重建代码知识图谱", "progress": 10})
+    repository = graph.registry.get_repository(repository_id)
+    run_id = str(repository.get("active_run_id") or "")
+    if not run_id:
+        raise ClangWikiError("仓库尚无成功运行快照，请先完成代码分析或 Wiki 生成。")
+    run = graph.db.one("SELECT * FROM runs WHERE id=? AND repository_id=?", (run_id, repository_id))
+    if not run:
+        raise ClangWikiError("当前运行快照记录不存在，无法重建图谱。")
+    if cancel.is_set():
+        raise ClangWikiError("图谱重建已取消。")
+    result = graph.ingest_repository(repository_id, run_id, Path(run["artifact_path"]))
+    emit({"stage": "graph", "message": "图谱事实、领域层和社区指标已更新", "progress": 100})
     return result
 
 

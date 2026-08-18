@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Iterator, Sequence
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 
 class Database:
@@ -74,8 +74,15 @@ class Database:
                 )
             if version < 1:
                 self._migrate_v1(connection)
-                connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-                connection.commit()
+                version = 1
+            if version < 2:
+                self._migrate_v2(connection)
+                version = 2
+            if version < 3:
+                self._migrate_v3(connection)
+                version = 3
+            connection.execute(f"PRAGMA user_version = {version}")
+            connection.commit()
 
     @staticmethod
     def _migrate_v1(connection: sqlite3.Connection) -> None:
@@ -297,6 +304,163 @@ class Database:
                 "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5("
                 "chunk_id UNINDEXED, title, content, tokenize='unicode61')"
             )
+
+    @staticmethod
+    def _migrate_v2(connection: sqlite3.Connection) -> None:
+        """Upgrade the flat v1 relation store into an evidence-backed property graph.
+
+        The legacy columns remain available so older snapshots and callers can be
+        read during the compatibility window.  New code writes both the explicit
+        v2 columns and the existing metadata JSON.
+        """
+
+        node_columns = {
+            "layer": "TEXT NOT NULL DEFAULT 'code'",
+            "subtype": "TEXT",
+            "stable_key": "TEXT",
+            "community_id": "TEXT",
+            "properties_json": "TEXT NOT NULL DEFAULT '{}'",
+            "first_seen_run_id": "TEXT",
+            "last_seen_run_id": "TEXT",
+        }
+        edge_columns = {
+            "status": "TEXT NOT NULL DEFAULT 'confirmed'",
+            "origin": "TEXT NOT NULL DEFAULT 'source'",
+            "weight": "REAL NOT NULL DEFAULT 1.0",
+            "evidence_count": "INTEGER NOT NULL DEFAULT 0",
+        }
+        existing_nodes = {
+            row[1] for row in connection.execute("PRAGMA table_info(knowledge_nodes)").fetchall()
+        }
+        existing_edges = {
+            row[1] for row in connection.execute("PRAGMA table_info(knowledge_edges)").fetchall()
+        }
+        for name, declaration in node_columns.items():
+            if name not in existing_nodes:
+                connection.execute(f"ALTER TABLE knowledge_nodes ADD COLUMN {name} {declaration}")
+        for name, declaration in edge_columns.items():
+            if name not in existing_edges:
+                connection.execute(f"ALTER TABLE knowledge_edges ADD COLUMN {name} {declaration}")
+
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS graph_evidence (
+                id TEXT PRIMARY KEY,
+                edge_id TEXT NOT NULL REFERENCES knowledge_edges(id) ON DELETE CASCADE,
+                repository_id TEXT REFERENCES repositories(id) ON DELETE CASCADE,
+                run_id TEXT,
+                git_commit TEXT,
+                origin TEXT NOT NULL,
+                confidence REAL NOT NULL DEFAULT 1.0,
+                source_uri TEXT,
+                line_start INTEGER,
+                line_end INTEGER,
+                extractor TEXT,
+                extractor_version TEXT,
+                reason TEXT NOT NULL DEFAULT '',
+                metadata_json TEXT NOT NULL DEFAULT '{}'
+            );
+            CREATE INDEX IF NOT EXISTS idx_graph_evidence_edge ON graph_evidence(edge_id);
+            CREATE INDEX IF NOT EXISTS idx_graph_evidence_repo ON graph_evidence(repository_id, run_id);
+
+            CREATE TABLE IF NOT EXISTS graph_communities (
+                id TEXT PRIMARY KEY,
+                repository_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+                run_id TEXT,
+                name TEXT NOT NULL,
+                color TEXT NOT NULL,
+                member_count INTEGER NOT NULL DEFAULT 0,
+                cohesion REAL NOT NULL DEFAULT 0.0,
+                metadata_json TEXT NOT NULL DEFAULT '{}'
+            );
+            CREATE INDEX IF NOT EXISTS idx_graph_communities_repo ON graph_communities(repository_id, run_id);
+
+            CREATE TABLE IF NOT EXISTS graph_metrics (
+                node_id TEXT NOT NULL REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+                repository_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+                run_id TEXT,
+                degree REAL NOT NULL DEFAULT 0.0,
+                in_degree REAL NOT NULL DEFAULT 0.0,
+                out_degree REAL NOT NULL DEFAULT 0.0,
+                betweenness REAL NOT NULL DEFAULT 0.0,
+                pagerank REAL NOT NULL DEFAULT 0.0,
+                is_hub INTEGER NOT NULL DEFAULT 0,
+                is_bridge INTEGER NOT NULL DEFAULT 0,
+                is_orphan INTEGER NOT NULL DEFAULT 0,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                PRIMARY KEY(node_id, run_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_graph_metrics_repo ON graph_metrics(repository_id, run_id);
+
+            CREATE TABLE IF NOT EXISTS graph_aliases (
+                repository_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+                alias TEXT NOT NULL,
+                node_id TEXT NOT NULL REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+                origin TEXT NOT NULL DEFAULT 'source',
+                confidence REAL NOT NULL DEFAULT 1.0,
+                PRIMARY KEY(repository_id, alias, node_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS graph_layouts (
+                repository_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+                run_id TEXT,
+                view_key TEXT NOT NULL,
+                node_id TEXT NOT NULL REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+                x REAL NOT NULL,
+                y REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY(repository_id, run_id, view_key, node_id)
+            );
+            """
+        )
+
+        # Preserve v1 semantics without promoting lexical candidates.
+        connection.execute(
+            "UPDATE knowledge_edges SET status=CASE "
+            "WHEN certainty='rejected' THEN 'rejected' "
+            "WHEN kind='POSSIBLE_CALL' OR certainty IN ('candidate','lexical') THEN 'candidate' "
+            "ELSE 'confirmed' END"
+        )
+        connection.execute(
+            "UPDATE knowledge_edges SET origin=CASE "
+            "WHEN certainty='compiler' THEN 'compiler' "
+            "WHEN certainty='lexical' THEN 'source' "
+            "WHEN certainty='user-confirmed' THEN 'user' "
+            "ELSE 'source' END"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_nodes_layer_kind ON knowledge_nodes(repository_id, layer, kind)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_edges_status_kind ON knowledge_edges(repository_id, status, kind)"
+        )
+
+    @staticmethod
+    def _migrate_v3(connection: sqlite3.Connection) -> None:
+        """Persist immutable per-run graph snapshots for version comparison."""
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS graph_node_snapshots (
+                repository_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+                run_id TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                PRIMARY KEY(repository_id, run_id, node_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_graph_node_snapshots_run
+                ON graph_node_snapshots(repository_id, run_id);
+
+            CREATE TABLE IF NOT EXISTS graph_edge_snapshots (
+                repository_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+                run_id TEXT NOT NULL,
+                edge_id TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                PRIMARY KEY(repository_id, run_id, edge_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_graph_edge_snapshots_run
+                ON graph_edge_snapshots(repository_id, run_id);
+            """
+        )
 
 
 def json_dumps(value: Any) -> str:

@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { api, query } from "./api";
 import GraphCanvas from "./GraphCanvas";
+import GraphWorkbench from "./GraphWorkbench";
 
 type View = "overview" | "repositories" | "collections" | "wiki" | "graph" | "search" | "ask" | "jobs" | "settings";
 type Scope = { type: "repository" | "collection"; id: string; name: string } | null;
@@ -114,7 +115,7 @@ function App() {
         {view === "repositories" && <Repositories repositories={repositories} scope={scope} moduleTree={moduleTree} select={chooseRepository} onAdd={() => setModal("repo")} onGenerate={() => runAction("generate")} onIndex={() => runAction("index")} onJobs={() => setView("jobs")} notify={notify} refresh={refresh} />}
         {view === "collections" && <Collections collections={collections} repositories={repositories} scope={scope} select={chooseCollection} onAdd={() => setModal("collection")} notify={notify} refresh={refresh} />}
         {view === "wiki" && <Wiki scope={scope} onManual={() => setModal("manual")} notify={notify} />}
-        {view === "graph" && <Graph scope={scope} notify={notify} />}
+        {view === "graph" && <GraphWorkbench scope={scope} notify={notify} />}
         {view === "search" && <KnowledgeSearch scope={scope} notify={notify} />}
         {view === "ask" && <KnowledgeAsk scope={scope} notify={notify} />}
         {view === "jobs" && <Jobs jobs={jobs} notify={notify} refresh={refresh} />}

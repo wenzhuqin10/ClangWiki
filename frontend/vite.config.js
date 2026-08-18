@@ -10,6 +10,22 @@ export default defineConfig({
         emptyOutDir: true,
         sourcemap: false,
         assetsDir: "assets",
+        chunkSizeWarningLimit: 700,
+        rollupOptions: {
+            output: {
+                manualChunks: function (id) {
+                    if (!id.includes("node_modules"))
+                        return undefined;
+                    if (id.includes("cytoscape") || id.includes("layout-base") || id.includes("cose-base"))
+                        return "graph-vendor";
+                    if (id.includes("react") || id.includes("scheduler"))
+                        return "react-vendor";
+                    if (id.includes("marked") || id.includes("dompurify"))
+                        return "content-vendor";
+                    return undefined;
+                },
+            },
+        },
     },
     server: {
         host: "127.0.0.1",

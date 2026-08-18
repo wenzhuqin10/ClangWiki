@@ -208,10 +208,29 @@ class IndexService:
         )
         for node in nodes:
             yield self._symbol_chunk(node, root)
-        # Relations remain searchable through the graph channel. Embedding every
-        # edge duplicates tens of thousands of tiny records in large baseband
-        # repositories and materially increases CPU/RAM without improving exact
-        # call-path retrieval.
+        # Confirmed, development-relevant relations are indexed as FTS-only
+        # evidence chunks. This gives RAG a real [G] citation without embedding
+        # tens of thousands of tiny graph records.
+        graph_kinds = (
+            "CALLS", "READS", "WRITES", "USES_TYPE", "PASSES_TO", "RETURNS_TYPE",
+            "REGISTER_CALLBACK", "INVOKES_CALLBACK", "INCLUDES", "CONFIGURES",
+            "SENDS", "RECEIVES", "PRODUCES", "CONSUMES", "IMPLEMENTS_CHANNEL",
+            "PARTICIPATES_IN", "MATCHES_DECLARATION", "CROSS_REPO_CALL",
+            "PROVIDES_INTERFACE", "CONSUMES_INTERFACE",
+        )
+        placeholders = ",".join("?" for _ in graph_kinds)
+        for edge in self.db.all(
+            f"SELECT e.*,s.name AS source_name,t.name AS target_name,"
+            "ge.source_uri AS evidence_uri,ge.line_start AS evidence_line_start,"
+            "ge.line_end AS evidence_line_end,ge.reason AS evidence_reason "
+            "FROM knowledge_edges e "
+            "LEFT JOIN knowledge_nodes s ON s.id=e.source_id "
+            "LEFT JOIN knowledge_nodes t ON t.id=e.target_id "
+            "LEFT JOIN graph_evidence ge ON ge.id=(SELECT ge2.id FROM graph_evidence ge2 WHERE ge2.edge_id=e.id ORDER BY ge2.id LIMIT 1) "
+            f"WHERE e.repository_id=? AND e.run_id=? AND e.status='confirmed' AND e.kind IN ({placeholders})",
+            (repository_id, active_run_id, *graph_kinds),
+        ):
+            yield _edge_chunk(edge, repository_id, None)
 
     def _collection_chunks(self, collection_id: str) -> Iterator[ChunkRecord]:
         for document in self.db.all("SELECT * FROM documents WHERE collection_id=?", (collection_id,)):
@@ -224,7 +243,7 @@ class IndexService:
         for edge in self.db.all(
             "SELECT e.*,s.name AS source_name,t.name AS target_name FROM knowledge_edges e "
             "LEFT JOIN knowledge_nodes s ON s.id=e.source_id LEFT JOIN knowledge_nodes t ON t.id=e.target_id "
-            "WHERE e.collection_id=? AND e.certainty<>'rejected'",
+            "WHERE e.collection_id=? AND COALESCE(e.status,CASE WHEN e.certainty='candidate' THEN 'candidate' ELSE 'confirmed' END)='confirmed'",
             (collection_id,),
         ):
             yield _edge_chunk(edge, None, collection_id)
@@ -400,16 +419,26 @@ class IndexService:
             return []
         placeholders = ",".join("?" for _ in node_ids)
         edges = self.db.all(
-            f"SELECT source_id,target_id FROM knowledge_edges WHERE source_id IN ({placeholders}) OR target_id IN ({placeholders}) LIMIT ?",
+            f"SELECT id,source_id,target_id FROM knowledge_edges WHERE status='confirmed' "
+            f"AND (source_id IN ({placeholders}) OR target_id IN ({placeholders})) LIMIT ?",
             tuple(node_ids) + tuple(node_ids) + (limit * 3,),
         )
+        edge_uris = [f"graph://{edge['id']}" for edge in edges]
+        graph_chunks: list[str] = []
+        if edge_uris:
+            edge_placeholders = ",".join("?" for _ in edge_uris)
+            graph_chunks = [row["id"] for row in self.db.all(
+                f"SELECT id FROM chunks WHERE kind='graph' AND source_uri IN ({edge_placeholders})",
+                tuple(edge_uris),
+            )]
         related = _unique([edge[key] for edge in edges for key in ("source_id", "target_id") if edge[key] not in node_ids])
         if not related:
-            return []
+            return graph_chunks[:limit]
         placeholders = ",".join("?" for _ in related)
         chunks = self.db.all(f"SELECT id,node_id FROM chunks WHERE node_id IN ({placeholders})", tuple(related))
         by_node = {row["node_id"]: row["id"] for row in chunks}
-        return [by_node[item] for item in related if item in by_node][:limit]
+        related_chunks = [by_node[item] for item in related if item in by_node]
+        return _unique(graph_chunks + related_chunks)[:limit]
 
     def _scope_ids(self, scope_type: str, scope_id: str) -> tuple[list[str], list[str]]:
         if scope_type == "repository":
@@ -608,7 +637,9 @@ def _select_vector_chunks(
     ranked by graph connectivity and declaration importance, then capped. The
     policy is deterministic so unchanged repositories produce stable indexes.
     """
-    prose = [item for item in chunks if item.kind != "code"]
+    # Graph edges are structured evidence. They remain in SQLite FTS and graph
+    # expansion, but are intentionally not embedded.
+    prose = [item for item in chunks if item.kind not in {"code", "graph"}]
     code = [item for item in chunks if item.kind == "code"]
     kind_priority = {
         "struct": 5,
@@ -675,9 +706,28 @@ def _edge_chunk(edge: dict[str, Any], repository_id: str | None, collection_id: 
     source = str(edge.get("source_name") or edge.get("source_id"))
     target = str(edge.get("target_name") or edge.get("target_id"))
     kind = str(edge.get("kind") or "RELATED_TO")
-    content = f"关系：{source} --{kind}--> {target}\n确定性：{edge.get('certainty')}\n置信度：{edge.get('confidence')}"
+    evidence_uri = str(edge.get("evidence_uri") or "")
+    evidence_line = edge.get("evidence_line_start")
+    location = f"{evidence_uri}:{evidence_line}" if evidence_uri and evidence_line else evidence_uri or "未提供位置"
+    content = (
+        f"关系：{source} --{kind}--> {target}\n"
+        f"状态：{edge.get('status') or edge.get('certainty')}\n"
+        f"来源：{edge.get('origin') or 'unknown'}\n"
+        f"置信度：{edge.get('confidence')}\n"
+        f"证据位置：{location}\n"
+        f"证据说明：{edge.get('evidence_reason') or '结构化图谱关系'}"
+    )
     source_uri = f"graph://{edge.get('id')}"
-    return _chunk(repository_id, collection_id, None, None, "graph", f"{source} → {target}", content, source_uri, {"certainty": edge.get("certainty"), "edge_id": edge.get("id")})
+    return _chunk(
+        repository_id, collection_id, None, None, "graph", f"{source} → {target}", content, source_uri,
+        {
+            "certainty": edge.get("certainty"), "status": edge.get("status"),
+            "origin": edge.get("origin"), "edge_id": edge.get("id"),
+            "relation_type": kind, "source_id": edge.get("source_id"),
+            "target_id": edge.get("target_id"), "evidence_uri": evidence_uri,
+            "line_start": evidence_line,
+        },
+    )
 
 
 def _chunk(

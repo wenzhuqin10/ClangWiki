@@ -46,7 +46,10 @@ Windows 中不使用符号链接。“当前 Wiki”由 SQLite 中的 `repositor
 | `repositories` / `runs` | 源码路径、配置、提交、快照和当前版本。 |
 | `collections` / `collection_repositories` | 不复制源码的逻辑合仓。 |
 | `jobs` / `job_events` | 可恢复的分析、生成、索引和集合任务及 SSE 进度。 |
-| `knowledge_nodes` / `knowledge_edges` | 仓库、模块、文件、符号、文档与关系图。 |
+| `knowledge_nodes` / `knowledge_edges` | 当前有效的属性图节点与逻辑关系。 |
+| `graph_evidence` | 关系的源码位置、提取器、置信度和原因；一条逻辑边可有多条证据。 |
+| `graph_communities` / `graph_metrics` | 社区、中心性、核心、桥梁和孤点分析。 |
+| `graph_node_snapshots` / `graph_edge_snapshots` | 每次运行的不可变图谱快照，用于版本差异。 |
 | `documents` / `annotations` / `tags` / `document_revisions` | 生成快照、人工知识、批注、标签和历史。 |
 | `chunks` / `chunks_fts` | 稳定知识切块、FTS5 和向量键。 |
 | `conversations` / `turns` / `citations` | RAG 短会话、回答和本轮引用。 |
@@ -73,11 +76,11 @@ phy/ → 仓库架构 → README
 
 ## 5. 图谱与跨仓关系
 
-节点类型：`repository`、`module`、`file`、`symbol`、`document`、`external`。关系类型：`CONTAINS`、`DEPENDS_ON`、`INCLUDES`、`CALLS`、`POSSIBLE_CALL`、`REFERENCES`、`DEFINES`、`DOCUMENTS`、`RELATED_TO`。
+图谱分为代码事实、基带领域、文档知识和候选推断四层。代码层除仓库、模块、文件和符号外，还记录 CMake 构建目标与翻译单元；领域层保守识别信道、参考信号、HARQ、接口、PDU、配置、状态、时序、日志和显式标准引用。完整实体、关系和证据契约见[无线基带代码知识图谱规范](CODE_KNOWLEDGE_GRAPH.zh-CN.md)。
 
 跨仓关系按以下顺序建立：完整符号名与签名一致（编译器/确定关系）、公共头文件与编译目标匹配、用户确认的别名、仅名称相似的候选关系。候选关系不会进入确定调用链，也不能作为强事实用于 RAG 回答。
 
-前端默认按模块聚合加载；用户再下钻到文件或符号级，避免一次渲染整个中大型仓库。
+前端默认按模块或社区聚合加载；用户再下钻到文件或符号级，避免一次渲染整个中大型仓库。社区发现不改变人工配置的模块层级，只用于发现实际耦合、核心入口、桥接接口和循环依赖。
 
 ## 6. 增量规则
 

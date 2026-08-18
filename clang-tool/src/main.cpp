@@ -50,7 +50,7 @@ class Analyzer {
 
   bool analyze(CXTranslationUnit unit) {
     CXCursor cursor = clang_getTranslationUnitCursor(unit);
-    visit(cursor, "", "");
+    visit(cursor, "", "", clang_getNullCursor());
     return true;
   }
 
@@ -61,13 +61,14 @@ class Analyzer {
     std::string currentRecord;
   };
 
-  static CXChildVisitResult visitor(CXCursor cursor, CXCursor, CXClientData data) {
+  static CXChildVisitResult visitor(CXCursor cursor, CXCursor parent, CXClientData data) {
     auto* context = static_cast<VisitContext*>(data);
-    context->analyzer->visit(cursor, context->currentFunction, context->currentRecord);
+    context->analyzer->visit(cursor, context->currentFunction, context->currentRecord, parent);
     return CXChildVisit_Continue;
   }
 
-  void visit(CXCursor cursor, const std::string& parentFunction, const std::string& parentRecord) {
+  void visit(CXCursor cursor, const std::string& parentFunction, const std::string& parentRecord,
+             CXCursor parentCursor) {
     if (clang_Location_isInSystemHeader(clang_getCursorLocation(cursor))) return;
     const CXCursorKind kind = clang_getCursorKind(cursor);
     const Location location = locate(cursor);
@@ -77,6 +78,7 @@ class Analyzer {
     if (isFunction(kind) && clang_isCursorDefinition(cursor) && project(location)) {
       currentFunction = qualified(cursor);
       emitSymbol(kind == CXCursor_CXXMethod ? "method" : "function", cursor, location);
+      emitRelation(currentFunction, text(clang_getTypeSpelling(clang_getCursorResultType(cursor))), "RETURNS_TYPE", location, 1.0);
     } else if (isRecord(kind) && clang_isCursorDefinition(cursor) && project(location)) {
       const char* recordKind = kind == CXCursor_StructDecl ? "struct" :
                                kind == CXCursor_UnionDecl ? "union" : "class";
@@ -84,6 +86,26 @@ class Analyzer {
       currentRecord = qualified(cursor);
     } else if (kind == CXCursor_EnumDecl && clang_isCursorDefinition(cursor) && project(location)) {
       emitSymbol("enum", cursor, location);
+      currentRecord = qualified(cursor);
+    } else if (kind == CXCursor_ParmDecl && !parentFunction.empty() && project(location)) {
+      emitSymbol("parameter", cursor, location);
+      emitRelation(parentFunction, qualified(cursor), "HAS_PARAMETER", location, 1.0);
+      emitRelation(qualified(cursor), text(clang_getTypeSpelling(clang_getCursorType(cursor))), "USES_TYPE", location, 1.0);
+    } else if (kind == CXCursor_FieldDecl && !parentRecord.empty() && project(location)) {
+      emitSymbol("field", cursor, location);
+      emitRelation(parentRecord, qualified(cursor), "HAS_FIELD", location, 1.0);
+      emitRelation(qualified(cursor), text(clang_getTypeSpelling(clang_getCursorType(cursor))), "USES_TYPE", location, 1.0);
+    } else if (kind == CXCursor_EnumConstantDecl && !parentRecord.empty() && project(location)) {
+      emitSymbol("enum_value", cursor, location);
+      emitRelation(parentRecord, qualified(cursor), "HAS_VALUE", location, 1.0);
+    } else if (kind == CXCursor_TypedefDecl && project(location)) {
+      emitSymbol("typedef", cursor, location);
+      emitRelation(qualified(cursor), text(clang_getTypeSpelling(clang_getTypedefDeclUnderlyingType(cursor))), "USES_TYPE", location, 1.0);
+    } else if (kind == CXCursor_MacroDefinition && project(location)) {
+      emitSymbol("macro", cursor, location);
+    } else if (kind == CXCursor_InclusionDirective && project(location)) {
+      CXFile included = clang_getIncludedFile(cursor);
+      emitRelation(location.path, included ? text(clang_getFileName(included)) : text(clang_getCursorSpelling(cursor)), "INCLUDES", location, 1.0);
     } else if (kind == CXCursor_VarDecl && isGlobal(cursor) && project(location)) {
       emitSymbol("global", cursor, location);
     } else if (kind == CXCursor_CXXBaseSpecifier && !parentRecord.empty() && project(location)) {
@@ -99,7 +121,17 @@ class Analyzer {
     } else if (kind == CXCursor_DeclRefExpr && !parentFunction.empty() && project(location)) {
       CXCursor referenced = clang_getCursorReferenced(cursor);
       if (clang_getCursorKind(referenced) == CXCursor_VarDecl && isGlobal(referenced)) {
+        emitRelation(parentFunction, qualified(referenced), isWriteReference(cursor, parentCursor) ? "WRITES" : "READS", location, 1.0);
+      } else if (isFunction(clang_getCursorKind(referenced)) && clang_getCursorKind(parentCursor) != CXCursor_CallExpr) {
+        // A function referenced outside the direct callee position is commonly
+        // a callback/function-pointer value. Keep the exact reference as a
+        // compiler fact; higher-level callback rules may classify registration.
         emitRelation(parentFunction, qualified(referenced), "REFERENCES", location, 1.0);
+      }
+    } else if (kind == CXCursor_MemberRefExpr && !parentFunction.empty() && project(location)) {
+      CXCursor referenced = clang_getCursorReferenced(cursor);
+      if (clang_getCursorKind(referenced) == CXCursor_FieldDecl) {
+        emitRelation(parentFunction, qualified(referenced), isWriteReference(cursor, parentCursor) ? "WRITES" : "READS", location, 1.0);
       }
     }
 
@@ -121,6 +153,37 @@ class Analyzer {
     CXCursor parent = clang_getCursorSemanticParent(cursor);
     const CXCursorKind kind = clang_getCursorKind(parent);
     return kind == CXCursor_TranslationUnit || kind == CXCursor_Namespace || isRecord(kind);
+  }
+
+  static bool isWriteReference(CXCursor cursor, CXCursor parent) {
+    const CXCursorKind parentKind = clang_getCursorKind(parent);
+    if (parentKind == CXCursor_CompoundAssignOperator) return true;
+    CXTranslationUnit unit = clang_Cursor_getTranslationUnit(parent);
+    if (!unit) return false;
+    CXToken* tokens = nullptr;
+    unsigned count = 0;
+    clang_tokenize(unit, clang_getCursorExtent(parent), &tokens, &count);
+    bool write = false;
+    if (parentKind == CXCursor_UnaryOperator) {
+      for (unsigned index = 0; index < count; ++index) {
+        const std::string token = text(clang_getTokenSpelling(unit, tokens[index]));
+        if (token == "++" || token == "--") { write = true; break; }
+      }
+    } else if (parentKind == CXCursor_BinaryOperator) {
+      unsigned cursorOffset = 0, line = 0, column = 0;
+      CXFile cursorFile = nullptr;
+      clang_getSpellingLocation(clang_getCursorLocation(cursor), &cursorFile, &line, &column, &cursorOffset);
+      for (unsigned index = 0; index < count; ++index) {
+        if (text(clang_getTokenSpelling(unit, tokens[index])) != "=") continue;
+        unsigned tokenOffset = 0;
+        CXFile tokenFile = nullptr;
+        clang_getSpellingLocation(clang_getTokenLocation(unit, tokens[index]), &tokenFile, &line, &column, &tokenOffset);
+        write = cursorFile == tokenFile && cursorOffset < tokenOffset;
+        break;
+      }
+    }
+    clang_disposeTokens(unit, tokens, count);
+    return write;
   }
 
   Location locate(CXCursor cursor) const {
@@ -165,6 +228,7 @@ class Analyzer {
     clang_getSpellingLocation(clang_getRangeEnd(range), &endFile, &endLine, &column, &offset);
     const std::string name = text(clang_getCursorSpelling(cursor));
     const std::string signature = text(clang_getTypeSpelling(clang_getCursorType(cursor)));
+    const std::string usr = text(clang_getCursorUSR(cursor));
     std::cout << "{\"record\":\"symbol\",\"kind\":\"" << jsonEscape(kind)
               << "\",\"name\":\"" << jsonEscape(name)
               << "\",\"qualified_name\":\"" << jsonEscape(qualified(cursor))
@@ -172,6 +236,7 @@ class Analyzer {
               << "\",\"line_start\":" << location.line
               << ",\"line_end\":" << endLine
               << ",\"signature\":\"" << jsonEscape(signature)
+              << "\",\"usr\":\"" << jsonEscape(usr)
               << "\",\"certainty\":\"compiler\"}\n";
   }
 

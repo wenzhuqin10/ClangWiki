@@ -117,6 +117,20 @@ def _parser() -> argparse.ArgumentParser:
     ask.add_argument("question")
     ask.add_argument("--limit", type=int, default=12)
 
+    graph = commands.add_parser("graph", help="构建、分析和检查代码知识图谱")
+    graph_commands = graph.add_subparsers(dest="graph_command", required=True)
+    for name, help_text in (
+        ("build", "从当前运行快照重建图谱"),
+        ("analyze", "重新计算社区、核心节点和桥接指标"),
+        ("status", "查看分析覆盖和关系证据状态"),
+    ):
+        item = graph_commands.add_parser(name, help=help_text)
+        item.add_argument("repository_id")
+    graph_diff = graph_commands.add_parser("diff", help="比较两个运行快照的节点和关系变化")
+    graph_diff.add_argument("repository_id")
+    graph_diff.add_argument("from_run_id")
+    graph_diff.add_argument("to_run_id")
+
     jobs = commands.add_parser("jobs", help="查看持久化任务")
     jobs.add_argument("--limit", type=int, default=50)
     return parser
@@ -290,6 +304,24 @@ def main(argv: list[str] | None = None) -> int:
             scope_type, scope_id = _scope(args)
             conversation = services.rag.create_conversation(scope_type, scope_id, args.question[:80])
             _print(services.rag.ask(conversation["id"], args.question, args.limit))
+            return 0
+
+        if args.command == "graph":
+            repository = services.registry.get_repository(args.repository_id)
+            if args.graph_command == "status":
+                _print(services.graph.diagnostics(args.repository_id))
+            elif args.graph_command == "analyze":
+                _print(services.graph.analyze_repository(args.repository_id))
+            elif args.graph_command == "diff":
+                _print(services.graph.diff(args.repository_id, args.from_run_id, args.to_run_id))
+            else:
+                run_id = str(repository.get("active_run_id") or "")
+                run = services.database.one(
+                    "SELECT * FROM runs WHERE id=? AND repository_id=?", (run_id, args.repository_id),
+                ) if run_id else None
+                if not run:
+                    raise ClangWikiError("仓库尚无成功运行快照，请先完成代码分析或 Wiki 生成。")
+                _print(services.graph.ingest_repository(args.repository_id, run_id, Path(run["artifact_path"])))
             return 0
 
         if args.command == "jobs":
