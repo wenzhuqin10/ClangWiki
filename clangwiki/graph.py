@@ -379,13 +379,41 @@ class GraphService:
             conditions.append("status IN (" + ",".join("?" for _ in requested_statuses) + ")")
             parameters.extend(requested_statuses)
         if level in {"repository", "module", "file"}:
-            # Structural containment/definition edges collapse to self-edges at
-            # aggregate levels and can consume the SQL limit before any actual
-            # dependency or call edge is read.
-            conditions.append("kind NOT IN ('CONTAINS','DEFINES','DOCUMENTS')")
+            if view == "hierarchy":
+                # The hierarchy projection is the one aggregate view where
+                # containment is the signal, not noise.  At module level this
+                # keeps parent/child module edges; at file level it keeps the
+                # module-to-file navigation edges.
+                conditions.append("kind='CONTAINS'")
+            else:
+                # Fine-grained structural/build edges mostly collapse to
+                # self-edges at aggregate levels.  Excluding them before the
+                # SQL limit prevents hundreds of parameter/field/build edges
+                # from hiding useful cross-module calls and dependencies.
+                conditions.append(
+                    "kind NOT IN ('CONTAINS','DEFINES','DOCUMENTS','BUILDS','COMPILES',"
+                    "'HAS_PARAMETER','HAS_FIELD','HAS_VALUE')"
+                )
+        if view == "hierarchy" and level in {"module", "file"}:
+            # A hierarchy run needs enough containment rows to get past
+            # translation-unit/file edges and reach the small set of
+            # repo/module navigation edges.  Prefer those source IDs and use
+            # a bounded larger cap; ordinary dependency views keep the cheap
+            # limit below.
+            edge_limit = min(100000, max(limit * 100, 10000))
+            priority = "CASE WHEN source_id LIKE 'repo:%' OR source_id LIKE 'module:%' THEN 0 ELSE 1 END"
+        else:
+            edge_limit = max(limit * 12, limit)
+            priority = (
+                "CASE WHEN kind IN ('CALLS','POSSIBLE_CALL','DEPENDS_ON','INCLUDES',"
+                "'REFERENCES','READS','WRITES','PASSES_TO','REGISTER_CALLBACK',"
+                "'INVOKES_CALLBACK','CROSS_REPO_CALL','CONFIGURES','IMPLEMENTS_CHANNEL',"
+                "'PARTICIPATES_IN','SENDS','RECEIVES','PRODUCES','CONSUMES') THEN 0 ELSE 1 END"
+            )
         edges = self.db.all(
-            "SELECT * FROM knowledge_edges WHERE " + " AND ".join(conditions) + " LIMIT ?",
-            tuple(parameters + [max(limit * 5, limit)]),
+            "SELECT * FROM knowledge_edges WHERE " + " AND ".join(conditions)
+            + f" ORDER BY {priority}, confidence DESC, id LIMIT ?",
+            tuple(parameters + [edge_limit]),
         )
         if view == "community":
             return self._community_graph(repository_ids, node_map, edges, limit)
@@ -790,15 +818,35 @@ class GraphService:
 
         def owner(node: dict[str, Any]) -> str | None:
             repository_id = node.get("repository_id")
+            # Domain concepts, documents and unresolved externals are useful
+            # at symbol/knowledge level, but they do not belong to the
+            # repository's structural navigation tree.  Mapping them to the
+            # repository fallback would create misleading edges such as
+            # ``DMRS -> repository`` in a module overview.
+            if node.get("kind") in {"domain", "document", "external", "community"}:
+                return None
             if level == "repository":
                 return f"repo:{repository_id}" if repository_id else None
             if level == "module":
+                if node["kind"] == "repository":
+                    return f"repo:{repository_id}" if repository_id else None
                 module_id = node.get("module_id")
                 if node["kind"] == "module":
                     return node["id"]
-                return f"module:{repository_id}:{module_id}" if repository_id and module_id else None
+                return (
+                    f"module:{repository_id}:{module_id}"
+                    if repository_id and module_id
+                    else (f"repo:{repository_id}" if repository_id else None)
+                )
             if node["kind"] == "file":
                 return node["id"]
+            if node["kind"] == "module":
+                return node["id"]
+            if node["kind"] == "repository":
+                return f"repo:{repository_id}" if repository_id else None
+            module_id = node.get("module_id")
+            if repository_id and module_id:
+                return f"module:{repository_id}:{module_id}"
             path = node.get("path")
             return f"file:{repository_id}:{path}" if repository_id and path else None
 
@@ -844,6 +892,11 @@ class GraphService:
                 for node in node_map.values()
                 if node.get("kind") == "file"
             }
+            available.update(
+                node["id"]
+                for node in node_map.values()
+                if node.get("kind") == "module"
+            )
         ordered_node_ids = sorted(used) + sorted(available - used)
         public_nodes: list[dict[str, Any]] = []
         for node_id in ordered_node_ids:

@@ -127,6 +127,10 @@ def test_graph_v2_keeps_candidates_out_of_confirmed_paths(tmp_path: Path, monkey
         level="module", direction="incoming", include_candidates=True,
     )
     assert any(edge["kind"] == "POSSIBLE_CALL" and edge["source"] == ldpc_module["id"] for edge in incoming_with_candidates["edges"])
+    default_module_graph = graph.graph("repository", repository["id"], "module", limit=20)
+    assert any(edge["source"] == encoder_module["id"] and edge["target"] == ldpc_module["id"] for edge in default_module_graph["edges"])
+    hierarchy_graph = graph.graph("repository", repository["id"], "module", view="hierarchy", limit=20)
+    assert any(edge["kind"] == "CONTAINS" for edge in hierarchy_graph["edges"])
     default_graph = graph.graph("repository", repository["id"], "symbol", limit=200)
     assert "CALLS" in {edge["kind"] for edge in default_graph["edges"]}
     assert "POSSIBLE_CALL" not in {edge["kind"] for edge in default_graph["edges"]}
