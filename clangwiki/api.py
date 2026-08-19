@@ -388,6 +388,28 @@ def create_app(data_root: Path, web_root: Path | None = None) -> FastAPI:
     def graph_bridges(repository_id: str, limit: int = 30) -> dict[str, Any]:
         return {"nodes": services.graph.ranked_nodes(repository_id, "bridge", min(limit, 100))}
 
+    @app.get("/api/graph/god-nodes")
+    def graph_god_nodes(repository_id: str, limit: int = 30) -> dict[str, Any]:
+        diagnostics = services.graph.diagnostics(repository_id)
+        return {
+            "nodes": services.graph.ranked_nodes(repository_id, "hub", min(limit, 100)),
+            "available": bool(diagnostics.get("confirmed_calls")),
+            "diagnostics": diagnostics,
+        }
+
+    @app.get("/api/graph/surprising-connections")
+    def graph_surprising_connections(repository_id: str, limit: int = 50) -> dict[str, Any]:
+        diagnostics = services.graph.diagnostics(repository_id)
+        return {
+            "connections": services.graph.insights(repository_id, "surprising_connection", min(limit, 200)),
+            "available": bool(diagnostics.get("confirmed_calls")),
+            "diagnostics": diagnostics,
+        }
+
+    @app.get("/api/graph/insights")
+    def graph_insights(repository_id: str, kind: str | None = None, limit: int = 100) -> dict[str, Any]:
+        return {"insights": services.graph.insights(repository_id, kind, min(limit, 500))}
+
     @app.get("/api/graph/orphans")
     def graph_orphans(repository_id: str, limit: int = 30) -> dict[str, Any]:
         return {"nodes": services.graph.ranked_nodes(repository_id, "orphan", min(limit, 100))}

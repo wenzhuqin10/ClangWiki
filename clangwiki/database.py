@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Iterator, Sequence
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 class Database:
@@ -81,6 +81,9 @@ class Database:
             if version < 3:
                 self._migrate_v3(connection)
                 version = 3
+            if version < 4:
+                self._migrate_v4(connection)
+                version = 4
             connection.execute(f"PRAGMA user_version = {version}")
             connection.commit()
 
@@ -329,6 +332,13 @@ class Database:
             "weight": "REAL NOT NULL DEFAULT 1.0",
             "evidence_count": "INTEGER NOT NULL DEFAULT 0",
         }
+        metric_columns = {
+            "god_score": "REAL NOT NULL DEFAULT 0.0",
+            "god_type": "TEXT",
+            "community_span": "INTEGER NOT NULL DEFAULT 0",
+            "fan_in": "REAL NOT NULL DEFAULT 0.0",
+            "fan_out": "REAL NOT NULL DEFAULT 0.0",
+        }
         existing_nodes = {
             row[1] for row in connection.execute("PRAGMA table_info(knowledge_nodes)").fetchall()
         }
@@ -341,6 +351,12 @@ class Database:
         for name, declaration in edge_columns.items():
             if name not in existing_edges:
                 connection.execute(f"ALTER TABLE knowledge_edges ADD COLUMN {name} {declaration}")
+        existing_metrics = {
+            row[1] for row in connection.execute("PRAGMA table_info(graph_metrics)").fetchall()
+        }
+        for name, declaration in metric_columns.items():
+            if existing_metrics and name not in existing_metrics:
+                connection.execute(f"ALTER TABLE graph_metrics ADD COLUMN {name} {declaration}")
 
         connection.executescript(
             """
@@ -387,10 +403,31 @@ class Database:
                 is_hub INTEGER NOT NULL DEFAULT 0,
                 is_bridge INTEGER NOT NULL DEFAULT 0,
                 is_orphan INTEGER NOT NULL DEFAULT 0,
+                god_score REAL NOT NULL DEFAULT 0.0,
+                god_type TEXT,
+                community_span INTEGER NOT NULL DEFAULT 0,
+                fan_in REAL NOT NULL DEFAULT 0.0,
+                fan_out REAL NOT NULL DEFAULT 0.0,
                 metadata_json TEXT NOT NULL DEFAULT '{}',
                 PRIMARY KEY(node_id, run_id)
             );
             CREATE INDEX IF NOT EXISTS idx_graph_metrics_repo ON graph_metrics(repository_id, run_id);
+
+            CREATE TABLE IF NOT EXISTS graph_insights (
+                id TEXT PRIMARY KEY,
+                repository_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+                run_id TEXT,
+                kind TEXT NOT NULL,
+                source_id TEXT REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+                target_id TEXT REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+                score REAL NOT NULL DEFAULT 0.0,
+                reason_json TEXT NOT NULL DEFAULT '{}',
+                path_json TEXT NOT NULL DEFAULT '[]',
+                evidence_json TEXT NOT NULL DEFAULT '[]',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_graph_insights_repo ON graph_insights(repository_id, run_id, kind, score);
 
             CREATE TABLE IF NOT EXISTS graph_aliases (
                 repository_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
@@ -459,6 +496,49 @@ class Database:
             );
             CREATE INDEX IF NOT EXISTS idx_graph_edge_snapshots_run
                 ON graph_edge_snapshots(repository_id, run_id);
+            """
+        )
+
+    @staticmethod
+    def _migrate_v4(connection: sqlite3.Connection) -> None:
+        """Add God Node metrics and persisted graph insight records.
+
+        These columns were introduced after schema v3 had already shipped, so
+        they live in a dedicated migration instead of relying on the original
+        v2 CREATE TABLE statement being re-executed for existing databases.
+        """
+        metric_columns = {
+            "god_score": "REAL NOT NULL DEFAULT 0.0",
+            "god_type": "TEXT",
+            "community_span": "INTEGER NOT NULL DEFAULT 0",
+            "fan_in": "REAL NOT NULL DEFAULT 0.0",
+            "fan_out": "REAL NOT NULL DEFAULT 0.0",
+        }
+        existing = {
+            row[1] for row in connection.execute("PRAGMA table_info(graph_metrics)").fetchall()
+        }
+        if existing:
+            for name, declaration in metric_columns.items():
+                if name not in existing:
+                    connection.execute(f"ALTER TABLE graph_metrics ADD COLUMN {name} {declaration}")
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS graph_insights (
+                id TEXT PRIMARY KEY,
+                repository_id TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+                run_id TEXT,
+                kind TEXT NOT NULL,
+                source_id TEXT REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+                target_id TEXT REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+                score REAL NOT NULL DEFAULT 0.0,
+                reason_json TEXT NOT NULL DEFAULT '{}',
+                path_json TEXT NOT NULL DEFAULT '[]',
+                evidence_json TEXT NOT NULL DEFAULT '[]',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_graph_insights_repo
+                ON graph_insights(repository_id, run_id, kind, score);
             """
         )
 

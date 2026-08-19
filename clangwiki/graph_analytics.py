@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections import Counter
+import math
+import re
+from collections import Counter, defaultdict
 from typing import Any
 
 import networkx as nx
@@ -12,7 +14,13 @@ from .database import Database, json_dumps
 
 ANALYTIC_EDGE_KINDS = {
     "CALLS", "REFERENCES", "READS", "WRITES", "INCLUDES", "USES_TYPE",
-    "REGISTER_CALLBACK", "INVOKES_CALLBACK", "DEPENDS_ON", "CROSS_REPO_CALL",
+    "PASSES_TO", "RETURNS_TYPE", "REGISTER_CALLBACK", "INVOKES_CALLBACK",
+    "DEPENDS_ON", "CROSS_REPO_CALL",
+}
+
+SURPRISE_EDGE_KINDS = {
+    "CALLS", "READS", "WRITES", "USES_TYPE", "PASSES_TO", "REGISTER_CALLBACK",
+    "INVOKES_CALLBACK", "CONFIGURES", "CROSS_REPO_CALL",
 }
 
 COMMUNITY_COLORS = (
@@ -44,7 +52,11 @@ class GraphAnalytics:
             if edge["kind"] not in ANALYTIC_EDGE_KINDS:
                 continue
             if edge["source_id"] in node_ids and edge["target_id"] in node_ids:
-                graph.add_edge(edge["source_id"], edge["target_id"], kind=edge["kind"], weight=float(edge.get("weight") or 1.0))
+                current = graph.get_edge_data(edge["source_id"], edge["target_id"])
+                weight = float(edge.get("weight") or 1.0) + float(current.get("weight") or 0.0) if current else float(edge.get("weight") or 1.0)
+                kinds = set(current.get("kinds") or []) if current else set()
+                kinds.add(str(edge["kind"]))
+                graph.add_edge(edge["source_id"], edge["target_id"], kinds=sorted(kinds), weight=weight)
 
         undirected = graph.to_undirected()
         non_orphans = {node for node in undirected if undirected.degree(node) > 0}
@@ -84,27 +96,54 @@ class GraphAnalytics:
             sample = min(256, graph.number_of_nodes())
             betweenness = nx.betweenness_centrality(graph, k=sample, seed=42, normalized=True, weight=None)
         degree_values = sorted(degree.values(), reverse=True)
-        hub_threshold = degree_values[max(0, min(len(degree_values) - 1, int(len(degree_values) * 0.05)))] if degree_values else 0
+        hub_threshold = _percentile(degree_values, 0.90) if degree_values else 0.0
         bridge_nodes = {
             node for source, target in graph.edges()
             if community_by_node.get(source) and community_by_node.get(target)
             and community_by_node[source] != community_by_node[target]
             for node in (source, target)
         }
+        community_span = {
+            node_id: len({community_by_node.get(neighbor) for neighbor in graph.neighbors(node_id)
+                          if community_by_node.get(neighbor) and community_by_node.get(neighbor) != community_by_node.get(node_id)})
+            for node_id in node_ids
+        }
+        degree_norm = _normalise(degree)
+        betweenness_norm = _normalise(betweenness)
+        pagerank_norm = _normalise(pagerank)
+        span_norm = _normalise(community_span)
+        god_scores = {
+            node_id: (
+                0.25 * degree_norm.get(node_id, 0.0)
+                + 0.25 * betweenness_norm.get(node_id, 0.0)
+                + 0.20 * pagerank_norm.get(node_id, 0.0)
+                + 0.20 * span_norm.get(node_id, 0.0)
+                + 0.10 * _domain_weight(node_by_id[node_id])
+            )
+            for node_id in node_ids
+        }
+        god_threshold = max(0.55, _percentile(list(god_scores.values()), 0.95)) if god_scores else 1.0
         metric_rows = [{
             "node_id": node_id, "repository_id": repository_id, "run_id": run_id,
             "degree": float(degree.get(node_id, 0)), "in_degree": float(in_degree.get(node_id, 0)),
             "out_degree": float(out_degree.get(node_id, 0)),
             "betweenness": float(betweenness.get(node_id, 0.0)), "pagerank": float(pagerank.get(node_id, 0.0)),
-            "is_hub": int(degree.get(node_id, 0) >= max(2, hub_threshold)),
+            "is_hub": int(degree.get(node_id, 0) >= max(2, hub_threshold) and god_scores.get(node_id, 0.0) >= god_threshold),
             "is_bridge": int(node_id in bridge_nodes), "is_orphan": int(degree.get(node_id, 0) == 0),
+            "god_score": float(god_scores.get(node_id, 0.0)),
+            "god_type": _god_type(node_by_id[node_id], community_span.get(node_id, 0)),
+            "community_span": int(community_span.get(node_id, 0)),
+            "fan_in": float(in_degree.get(node_id, 0)),
+            "fan_out": float(out_degree.get(node_id, 0)),
             "metadata_json": "{}",
         } for node_id in node_ids]
 
         cycle_components = [sorted(group) for group in nx.strongly_connected_components(graph) if len(group) > 1]
+        insights = self._surprising_connections(repository_id, run_id, graph, node_by_id, community_by_node, god_scores, edge_rows)
         with self.db.transaction() as connection:
             connection.execute("DELETE FROM graph_communities WHERE repository_id=?", (repository_id,))
             connection.execute("DELETE FROM graph_metrics WHERE repository_id=?", (repository_id,))
+            connection.execute("DELETE FROM graph_insights WHERE repository_id=?", (repository_id,))
             if community_rows:
                 connection.executemany(
                     "INSERT INTO graph_communities(id,repository_id,run_id,name,color,member_count,cohesion,metadata_json) "
@@ -113,9 +152,15 @@ class GraphAnalytics:
                 )
             if metric_rows:
                 connection.executemany(
-                    "INSERT INTO graph_metrics(node_id,repository_id,run_id,degree,in_degree,out_degree,betweenness,pagerank,is_hub,is_bridge,is_orphan,metadata_json) "
-                    "VALUES(:node_id,:repository_id,:run_id,:degree,:in_degree,:out_degree,:betweenness,:pagerank,:is_hub,:is_bridge,:is_orphan,:metadata_json)",
+                    "INSERT INTO graph_metrics(node_id,repository_id,run_id,degree,in_degree,out_degree,betweenness,pagerank,is_hub,is_bridge,is_orphan,god_score,god_type,community_span,fan_in,fan_out,metadata_json) "
+                    "VALUES(:node_id,:repository_id,:run_id,:degree,:in_degree,:out_degree,:betweenness,:pagerank,:is_hub,:is_bridge,:is_orphan,:god_score,:god_type,:community_span,:fan_in,:fan_out,:metadata_json)",
                     metric_rows,
+                )
+            if insights:
+                connection.executemany(
+                    "INSERT INTO graph_insights(id,repository_id,run_id,kind,source_id,target_id,score,reason_json,path_json,evidence_json,metadata_json,created_at) "
+                    "VALUES(:id,:repository_id,:run_id,:kind,:source_id,:target_id,:score,:reason_json,:path_json,:evidence_json,:metadata_json,:created_at)",
+                    insights,
                 )
             for node_id in node_ids:
                 connection.execute(
@@ -125,6 +170,7 @@ class GraphAnalytics:
         return {
             "communities": len(communities), "nodes": graph.number_of_nodes(), "edges": graph.number_of_edges(),
             "hubs": sum(row["is_hub"] for row in metric_rows), "bridges": len(bridge_nodes),
+            "surprising_connections": len(insights),
             "orphans": sum(row["is_orphan"] for row in metric_rows), "cycles": len(cycle_components),
             "cycle_components": cycle_components[:50],
         }
@@ -139,11 +185,86 @@ class GraphAnalytics:
         allowed = {"hub": "m.is_hub=1", "bridge": "m.is_bridge=1", "orphan": "m.is_orphan=1"}
         condition = allowed[metric]
         return self.db.all(
-            "SELECT n.*,m.degree,m.in_degree,m.out_degree,m.betweenness,m.pagerank,m.is_hub,m.is_bridge,m.is_orphan "
+            "SELECT n.*,m.degree,m.in_degree,m.out_degree,m.betweenness,m.pagerank,m.is_hub,m.is_bridge,m.is_orphan,"
+            "m.god_score,m.god_type,m.community_span,m.fan_in,m.fan_out "
             "FROM graph_metrics m JOIN knowledge_nodes n ON n.id=m.node_id "
-            f"WHERE m.repository_id=? AND {condition} ORDER BY m.betweenness DESC,m.degree DESC LIMIT ?",
+            f"WHERE m.repository_id=? AND {condition} ORDER BY m.god_score DESC,m.betweenness DESC,m.degree DESC LIMIT ?",
             (repository_id, limit),
         )
+
+    def insights(self, repository_id: str, kind: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        conditions = ["repository_id=?"]
+        parameters: list[Any] = [repository_id]
+        if kind:
+            conditions.append("kind=?")
+            parameters.append(kind)
+        rows = self.db.all(
+            "SELECT * FROM graph_insights WHERE " + " AND ".join(conditions) + " ORDER BY score DESC LIMIT ?",
+            tuple(parameters + [max(1, min(limit, 500))]),
+        )
+        for row in rows:
+            row["reason"] = json.loads(row.get("reason_json") or "{}")
+            row["path"] = json.loads(row.get("path_json") or "[]")
+            row["evidence"] = json.loads(row.get("evidence_json") or "[]")
+        return rows
+
+    def _surprising_connections(
+        self,
+        repository_id: str,
+        run_id: str | None,
+        graph: nx.DiGraph,
+        nodes: dict[str, dict[str, Any]],
+        communities: dict[str, str],
+        god_scores: dict[str, float],
+        edge_rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        edges_by_pair: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+        for edge in edge_rows:
+            pair = (edge["source_id"], edge["target_id"])
+            if pair in graph.edges and edge["kind"] in SURPRISE_EDGE_KINDS and edge["status"] == "confirmed":
+                edges_by_pair[pair].append(edge)
+        candidates: list[dict[str, Any]] = []
+        for (source_id, target_id), edges in edges_by_pair.items():
+            source = nodes[source_id]
+            target = nodes[target_id]
+            source_module = str(source.get("module_id") or "")
+            target_module = str(target.get("module_id") or "")
+            source_community = communities.get(source_id)
+            target_community = communities.get(target_id)
+            cross_module = bool(source_module and target_module and source_module != target_module)
+            cross_community = bool(source_community and target_community and source_community != target_community)
+            if not cross_module and not cross_community:
+                continue
+            name_distance = 1.0 - _name_similarity(source, target)
+            common = len(set(graph.successors(source_id)).intersection(set(graph.predecessors(target_id))))
+            rarity = 1.0 / (1.0 + common)
+            score = min(1.0, 0.35 * float(cross_module) + 0.25 * float(cross_community) +
+                        0.20 * name_distance + 0.10 * rarity +
+                        0.10 * max(god_scores.get(source_id, 0.0), god_scores.get(target_id, 0.0)))
+            evidence_ids = [edge["id"] for edge in edges]
+            evidence = self.db.all(
+                "SELECT source_uri,line_start,line_end,origin,confidence,reason FROM graph_evidence WHERE edge_id IN (" +
+                ",".join("?" for _ in evidence_ids) + ") LIMIT 12",
+                tuple(evidence_ids),
+            ) if evidence_ids else []
+            kind = ", ".join(sorted({edge["kind"] for edge in edges}))
+            candidates.append({
+                "id": f"surprise:{repository_id}:{_digest(source_id + '|' + target_id + '|' + kind)}",
+                "repository_id": repository_id, "run_id": run_id, "kind": "surprising_connection",
+                "source_id": source_id, "target_id": target_id, "score": score,
+                "reason_json": json_dumps({
+                    "cross_module": cross_module, "cross_community": cross_community,
+                    "name_distance": round(name_distance, 4), "common_neighbors": common,
+                    "relation_kinds": kind.split(", "),
+                    "summary": "跨模块/社区的确定关系，且名称或目录上缺少明显相似性。",
+                }),
+                "path_json": json_dumps([source_id, target_id]),
+                "evidence_json": json_dumps(evidence),
+                "metadata_json": json_dumps({"analysis": "direct-confirmed-edge-v1"}),
+                "created_at": __import__("time").time(),
+            })
+        candidates.sort(key=lambda item: (-float(item["score"]), item["id"]))
+        return candidates[:200]
 
 
 def _community_id(repository_id: str, members: set[str]) -> str:
@@ -161,3 +282,56 @@ def _community_label(members: set[str], nodes: dict[str, dict[str, Any]]) -> str
                 tokens[token.upper()] += 1
     labels = [token for token, _ in tokens.most_common(3)]
     return " / ".join(labels) if labels else f"耦合群 {len(members)}"
+
+
+def _normalise(values: dict[str, float | int]) -> dict[str, float]:
+    maximum = max((float(value) for value in values.values()), default=0.0)
+    if maximum <= 0.0:
+        return {key: 0.0 for key in values}
+    return {key: min(1.0, float(value) / maximum) for key, value in values.items()}
+
+
+def _percentile(values: list[float | int], percentile: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(float(value) for value in values)
+    index = max(0, min(len(ordered) - 1, math.ceil((len(ordered) - 1) * percentile)))
+    return ordered[index]
+
+
+def _domain_weight(node: dict[str, Any]) -> float:
+    value = " ".join(str(node.get(key) or "") for key in ("name", "qualified_name", "module_id", "subtype")).lower()
+    tokens = ("pdsch", "pusch", "pdcch", "pucch", "prach", "harq", "dmrs", "ptrs", "fapi", "nfapi", "scheduler", "encoder", "mapper")
+    return 1.0 if any(token in value for token in tokens) else 0.0
+
+
+def _god_type(node: dict[str, Any], community_span: int) -> str:
+    value = " ".join(str(node.get(key) or "") for key in ("name", "qualified_name", "module_id", "subtype")).lower()
+    if any(token in value for token in ("config", "cfg", "param")):
+        return "配置核心"
+    if any(token in value for token in ("fapi", "nfapi", "interface", "request", "response", "callback")):
+        return "接口核心"
+    if any(token in value for token in ("harq", "tbs", "mcs", "rv", "bwp", "pdu", "buffer")):
+        return "数据核心"
+    if community_span >= 2:
+        return "桥接核心"
+    if any(token in value for token in ("thread", "worker", "slot", "tti", "task", "run", "process")):
+        return "时序核心"
+    return "流程核心"
+
+
+def _name_similarity(left: dict[str, Any], right: dict[str, Any]) -> float:
+    def tokens(node: dict[str, Any]) -> set[str]:
+        value = str(node.get("qualified_name") or node.get("name") or "")
+        parts = re.split(r"[^A-Za-z0-9]+|(?<=[a-z])(?=[A-Z])", value.lower())
+        return {part for part in parts if len(part) >= 2}
+
+    left_tokens = tokens(left)
+    right_tokens = tokens(right)
+    if not left_tokens or not right_tokens:
+        return 0.0
+    return len(left_tokens & right_tokens) / max(1, len(left_tokens | right_tokens))
+
+
+def _digest(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:20]

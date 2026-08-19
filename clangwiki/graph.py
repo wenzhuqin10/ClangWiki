@@ -54,6 +54,7 @@ GRAPH_RELATION_LABELS = {
     "DEFINES": "定义",
     "DOCUMENTS": "文档对应",
     "RELATED_TO": "相关",
+    "SURPRISING_CONNECTION": "惊喜链接",
 }
 
 GRAPH_NODE_LABELS = {
@@ -352,7 +353,8 @@ class GraphService:
             node_conditions.append("n.community_id=?")
             node_parameters.append(community_id)
         nodes = self.db.all(
-            "SELECT n.*,m.degree,m.in_degree,m.out_degree,m.betweenness,m.pagerank,m.is_hub,m.is_bridge,m.is_orphan "
+            "SELECT n.*,m.degree,m.in_degree,m.out_degree,m.betweenness,m.pagerank,m.is_hub,m.is_bridge,m.is_orphan,"
+            "m.god_score,m.god_type,m.community_span,m.fan_in,m.fan_out "
             "FROM knowledge_nodes n LEFT JOIN graph_metrics m ON m.node_id=n.id AND (m.run_id=n.run_id OR m.run_id IS NULL) WHERE "
             + " AND ".join(node_conditions),
             tuple(node_parameters),
@@ -387,6 +389,14 @@ class GraphService:
         )
         if view == "community":
             return self._community_graph(repository_ids, node_map, edges, limit)
+        if view == "coremap":
+            result = self._coremap_graph(repository_ids, node_map, edges, limit)
+            result["diagnostics"] = self.diagnostics(repository_ids[0]) if len(repository_ids) == 1 else {}
+            return result
+        if view == "surprises":
+            result = self._surprise_graph(repository_ids, node_map, limit)
+            result["diagnostics"] = self.diagnostics(repository_ids[0]) if len(repository_ids) == 1 else {}
+            return result
         if level == "symbol":
             public_edges = [self._public_edge(edge) for edge in edges if edge["source_id"] in node_map and edge["target_id"] in node_map]
             used = {item[key] for item in public_edges for key in ("source", "target")}
@@ -731,6 +741,10 @@ class GraphService:
                 "out_degree": row.get("out_degree") or 0, "betweenness": row.get("betweenness") or 0,
                 "pagerank": row.get("pagerank") or 0, "is_hub": bool(row.get("is_hub")),
                 "is_bridge": bool(row.get("is_bridge")), "is_orphan": bool(row.get("is_orphan")),
+                "god_score": row.get("god_score") or 0, "god_type": row.get("god_type"),
+                "community_span": row.get("community_span") or 0,
+                "fan_in": row.get("fan_in") or row.get("in_degree") or 0,
+                "fan_out": row.get("fan_out") or row.get("out_degree") or 0,
             },
         }
 
@@ -882,6 +896,116 @@ class GraphService:
             "diagnostics": self.diagnostics(repository_ids[0]) if len(repository_ids) == 1 else {},
         }
 
+    def _coremap_graph(
+        self, repository_ids: list[str], node_map: dict[str, dict[str, Any]],
+        edges: list[dict[str, Any]], limit: int,
+    ) -> dict[str, Any]:
+        """Return a bounded radial-style projection around God Nodes.
+
+        The database remains the source of truth; this projection only limits
+        the first render to the most connected, cross-community symbols and
+        their confirmed one-hop relationships.
+        """
+        hub_nodes = [
+            node for node in node_map.values()
+            if node.get("kind") in {"symbol", "external"}
+            and node.get("metrics", {}).get("is_hub")
+        ]
+        hub_nodes.sort(
+            key=lambda node: (
+                -float(node.get("metrics", {}).get("god_score") or 0),
+                -float(node.get("metrics", {}).get("degree") or 0),
+                str(node.get("display_name") or node.get("id")),
+            )
+        )
+        # A sparse or partially analysed repository may have no node above the
+        # strict threshold.  Showing the strongest confirmed symbols still
+        # gives the user a useful, honest focus view.
+        if not hub_nodes:
+            hub_nodes = sorted(
+                [
+                    node for node in node_map.values()
+                    if node.get("kind") in {"symbol", "external"}
+                    and float(node.get("metrics", {}).get("degree") or 0) > 0
+                ],
+                key=lambda node: -float(node.get("metrics", {}).get("degree") or 0),
+            )[:8]
+        hub_nodes = hub_nodes[: min(8, max(1, limit // 10))]
+        selected_order = [node["id"] for node in hub_nodes]
+        selected = set(selected_order)
+        confirmed_edges = [edge for edge in edges if (edge.get("status") or "confirmed") == "confirmed"]
+        by_hub: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for edge in confirmed_edges:
+            if edge["source_id"] in selected or edge["target_id"] in selected:
+                hub_id = edge["source_id"] if edge["source_id"] in selected else edge["target_id"]
+                by_hub[hub_id].append(edge)
+        for hub_id, related in by_hub.items():
+            related.sort(key=lambda edge: (-float(edge.get("weight") or 1), str(edge.get("id"))))
+            for edge in related[:18]:
+                for node_id in (edge["source_id"], edge["target_id"]):
+                    if node_id not in selected:
+                        selected.add(node_id)
+                        selected_order.append(node_id)
+        selected = set(selected_order[:limit])
+        public_edges = [
+            self._public_edge(edge) for edge in confirmed_edges
+            if edge["source_id"] in selected and edge["target_id"] in selected
+        ]
+        public_edges.sort(key=lambda edge: (-float(edge.get("weight") or 1), edge["id"]))
+        public_nodes = [node_map[node_id] for node_id in selected if node_id in node_map]
+        public_nodes.sort(
+            key=lambda node: (
+                not bool(node.get("metrics", {}).get("is_hub")),
+                -float(node.get("metrics", {}).get("god_score") or 0),
+                str(node.get("display_name") or node.get("id")),
+            )
+        )
+        return {
+            "nodes": public_nodes[:limit],
+            "edges": public_edges[: max(limit * 3, limit)],
+            "truncated": len(selected) > limit or len(public_edges) > max(limit * 3, limit),
+            "relation_counts": _relation_counts(public_edges),
+            "focus": "god_nodes", "available": bool(public_edges),
+            "message": None if public_edges else "当前没有编译器确认的代码关系，无法生成核心星图。",
+        }
+
+    def _surprise_graph(
+        self, repository_ids: list[str], node_map: dict[str, dict[str, Any]], limit: int,
+    ) -> dict[str, Any]:
+        """Project persisted surprising-connection insights as graph edges."""
+        rows: list[dict[str, Any]] = []
+        for repository_id in repository_ids:
+            rows.extend(self.insights(repository_id, "surprising_connection", min(limit, 200)))
+        rows.sort(key=lambda row: (-float(row.get("score") or 0), str(row.get("id"))))
+        rows = rows[:limit]
+        selected: set[str] = set()
+        public_edges: list[dict[str, Any]] = []
+        for row in rows:
+            source_id, target_id = row.get("source_id"), row.get("target_id")
+            if not source_id or not target_id:
+                continue
+            source = row.get("source") or node_map.get(source_id)
+            target = row.get("target") or node_map.get(target_id)
+            if not source or not target:
+                continue
+            node_map.setdefault(source_id, source)
+            node_map.setdefault(target_id, target)
+            selected.update((source_id, target_id))
+            public_edges.append({
+                "id": row["id"], "source": source_id, "target": target_id,
+                "kind": "SURPRISING_CONNECTION", "relation_label": "惊喜链接",
+                "certainty": "analytics", "confidence": float(row.get("score") or 0),
+                "status": "confirmed", "origin": "analytics", "weight": row.get("score") or 0,
+                "evidence_count": len(row.get("evidence") or []), "confirmed": True,
+                "metadata": {"insight": row.get("reason") or {}, "path": row.get("path") or [], "evidence": row.get("evidence") or []},
+                "insight_kind": row.get("kind"), "score": row.get("score") or 0,
+            })
+        public_nodes = [node_map[node_id] for node_id in selected if node_id in node_map]
+        return {
+            "nodes": public_nodes, "edges": public_edges, "truncated": len(public_edges) >= limit,
+            "relation_counts": _relation_counts(public_edges), "focus": "surprising_connections",
+        }
+
     def analyze_repository(self, repository_id: str) -> dict[str, Any]:
         repository = self.registry.get_repository(repository_id)
         return self.analytics.analyze(repository_id, repository.get("active_run_id"))
@@ -899,7 +1023,8 @@ class GraphService:
 
     def node_detail(self, node_id: str) -> dict[str, Any]:
         row = self.db.one(
-            "SELECT n.*,m.degree,m.in_degree,m.out_degree,m.betweenness,m.pagerank,m.is_hub,m.is_bridge,m.is_orphan "
+            "SELECT n.*,m.degree,m.in_degree,m.out_degree,m.betweenness,m.pagerank,m.is_hub,m.is_bridge,m.is_orphan,"
+            "m.god_score,m.god_type,m.community_span,m.fan_in,m.fan_out "
             "FROM knowledge_nodes n LEFT JOIN graph_metrics m ON m.node_id=n.id AND (m.run_id=n.run_id OR m.run_id IS NULL) WHERE n.id=?",
             (node_id,),
         )
@@ -1002,6 +1127,16 @@ class GraphService:
             if len(result) >= limit:
                 break
         return sorted(result, key=lambda item: -item["size"])
+
+    def insights(self, repository_id: str, kind: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        self.registry.get_repository(repository_id)
+        rows = self.analytics.insights(repository_id, kind=kind, limit=limit)
+        node_ids = [item for row in rows for item in (row.get("source_id"), row.get("target_id")) if item]
+        nodes = {node["id"]: self._public_node(node) for node in self._nodes_by_ids(list(dict.fromkeys(node_ids)))}
+        for row in rows:
+            row["source"] = nodes.get(row.get("source_id"))
+            row["target"] = nodes.get(row.get("target_id"))
+        return rows
 
     def export_graphml(self, scope_type: str, scope_id: str, level: str = "symbol") -> str:
         from xml.sax.saxutils import escape

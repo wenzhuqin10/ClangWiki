@@ -19,7 +19,7 @@ ClangWiki 的代码关系图是代码知识图谱的可视化入口，不是 LLM
 | 构建与代码事实 | `Repository`、`BuildTarget`、`TranslationUnit`、`Module`、`File`、`Function`、`Parameter`、`Struct`、`Field`、`Enum`、`Typedef`、`Macro`、`GlobalVariable`、`ExternalSymbol` | CMake、编译数据库、libclang |
 | 无线基带领域 | `PhysicalChannel`、`ReferenceSignal`、`HARQ`、`Interface`、`Message`、`PDU`、`ConfigItem`、`State`、`Timer`、`ExecutionContext`、`LogPoint`、`Assertion`、`TestCase`、`StandardClause` | 保守规则、显式源码证据 |
 | 文档知识 | `Document`、`DocumentSection`、`ManualPage`、`Annotation`、`Tag` | Wiki 与人工知识 |
-| 图分析 | `Community`、Hub、Bridge、Cycle、Orphan 指标 | NetworkX |
+| 图分析 | `Community`、God Node、Surprising Connection、Bridge、Cycle、Orphan 指标 | NetworkX 与确定关系分析 |
 
 局部变量不会作为全局节点。参数、字段等细粒度实体只在符号详情、接口视图和数据流视图按需展开，避免大仓库图谱失控。
 
@@ -55,7 +55,7 @@ extractor / extractor_version / reason
 5. 无法唯一解析的函数指针或词法调用保留为 `POSSIBLE_CALL`；
 6. 运行 `baseband-generic` 领域规则，仅在多项编译器证据满足时确认领域分类；
 7. 接入 Wiki 元数据和人工知识；
-8. 计算 Louvain 社区、Degree、Betweenness、PageRank、Hub、Bridge、Cycle 和 Orphan；
+8. 计算 Louvain 社区、Degree、Betweenness、PageRank、God Score、Bridge、Cycle 和 Orphan；
 9. 保存当前属性图、证据和不可变运行快照。
 
 原生分析器不可用或翻译单元解析失败时，图谱会持续显示“部分分析”警告。此时词法调用仍为候选，不能伪装成完整调用链。
@@ -71,6 +71,13 @@ extractor / extractor_version / reason
 5. 数据与配置流；
 6. 接口与消息；
 7. Wiki 知识图。
+
+此外提供两个面向导航的焦点视图：
+
+8. **核心星图（God Nodes）**：以 God Score 综合最高的确定性符号为中心，按一跳关系构造受控的径向子图。God Score 综合连接度、介数中心性、PageRank、跨社区跨度和基带领域权重；它是“优先阅读入口”，不是业务正确性的替代证明。
+9. **惊喜链接（Surprising Connections）**：从已确认的调用、读写、类型、参数传递和回调关系中，筛选跨模块/跨社区且名称相似度较低的关系。每条链接保留评分、路径和源码证据，用于发现目录结构之外的隐性耦合，不把候选边升级为事实。
+
+核心星图和惊喜链接使用深色焦点画布、橙色核心节点、发光关系边和渐进加载；默认仍限制在局部子图，避免大仓库一次渲染全部符号。
 
 默认只显示确定关系，单次初始图控制在 250 个节点左右，邻居展开限制为 80 个节点并支持一至三跳。用户可以 Shift 点击两个节点查询有向路径，在节点检查器中预览源码，在边检查器中查看全部证据并确认或否决候选关系，导出 JSON、SVG、PNG 或 GraphML，并比较最近两个图谱运行快照。
 
@@ -95,7 +102,7 @@ clangwiki --data-root D:\clangwiki-data graph status repo-...
 clangwiki --data-root D:\clangwiki-data graph diff repo-... run-old run-new
 ```
 
-主要接口：`GET /api/graph`、`GET /api/graph/nodes/{id}`、`GET /api/graph/neighbors`、`POST /api/graph/path`、`GET /api/graph/communities`、`GET /api/graph/hubs`、`GET /api/graph/bridges`、`GET /api/graph/cycles`、`GET /api/graph/diagnostics`、`GET /api/graph/diff`、`GET /api/graph/export.graphml`。
+主要接口：`GET /api/graph`、`GET /api/graph/nodes/{id}`、`GET /api/graph/neighbors`、`POST /api/graph/path`、`GET /api/graph/communities`、`GET /api/graph/hubs`、`GET /api/graph/god-nodes`、`GET /api/graph/surprising-connections`、`GET /api/graph/insights`、`GET /api/graph/bridges`、`GET /api/graph/cycles`、`GET /api/graph/diagnostics`、`GET /api/graph/diff`、`GET /api/graph/export.graphml`。`/api/graph` 的 `view=coremap` 和 `view=surprises` 分别返回两个焦点子图。
 
 ## 8. 验收重点
 
@@ -105,5 +112,6 @@ clangwiki --data-root D:\clangwiki-data graph diff repo-... run-old run-new
 - 节点详情能打开源码位置并显示全部证据；
 - PDSCH、DMRS、HARQ、MCS、TBS、接口与 PDU 能形成保守领域关联；
 - 社区、核心、桥梁、循环和孤点分析可用，但不修改模块层级；
+- God Score、核心星图和惊喜链接只使用确定关系；部分分析时前端持续显示“不可用/证据不足”提示；
 - 图谱关系能够以 `[G]` 引用参与问答，且引用可解析；
 - 两个运行快照可以报告新增、删除和变化的节点及关系。
