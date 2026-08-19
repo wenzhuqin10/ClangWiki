@@ -81,6 +81,7 @@ def test_graph_v2_keeps_candidates_out_of_confirmed_paths(tmp_path: Path, monkey
     _write(knowledge / "relations.json", [
         {"kind": "CALLS", "source": "pdsch_encode", "target": "ldpc_encode", "file_path": "PDSCH/encoder/pdsch.c", "line": 10, "certainty": "compiler", "confidence": 1.0},
         {"kind": "POSSIBLE_CALL", "source": "pdsch_encode", "target": "unknown_stage", "file_path": "PDSCH/encoder/pdsch.c", "line": 11, "certainty": "lexical", "confidence": 0.5},
+        {"kind": "POSSIBLE_CALL", "source": "ldpc_encode", "target": "pdsch_encode", "file_path": "PHY/ldpc/ldpc.c", "line": 12, "certainty": "lexical", "confidence": 0.5},
     ])
     _write(knowledge / "repository.json", {"analysis_mode": "full", "diagnostics": []})
     _write(knowledge / "source_coverage.json", {"source_count": 1, "covered_source_count": 1, "coverage": 1.0})
@@ -102,6 +103,30 @@ def test_graph_v2_keeps_candidates_out_of_confirmed_paths(tmp_path: Path, monkey
         "SELECT id FROM knowledge_nodes WHERE repository_id=? AND kind='translation_unit'",
         (repository["id"],),
     )
+    encoder_module = database.one(
+        "SELECT id FROM knowledge_nodes WHERE repository_id=? AND kind='module' AND module_id=?",
+        (repository["id"], "PDSCH_encoder"),
+    )
+    ldpc_module = database.one(
+        "SELECT id FROM knowledge_nodes WHERE repository_id=? AND kind='module' AND module_id=?",
+        (repository["id"], "PHY_ldpc"),
+    )
+    assert encoder_module and ldpc_module
+    outgoing = graph.neighbors(
+        encoder_module["id"], scope_type="repository", scope_id=repository["id"],
+        level="module", direction="outgoing",
+    )
+    assert any(edge["source"] == encoder_module["id"] and edge["target"] == ldpc_module["id"] for edge in outgoing["edges"])
+    incoming_without_candidates = graph.neighbors(
+        encoder_module["id"], scope_type="repository", scope_id=repository["id"],
+        level="module", direction="incoming",
+    )
+    assert all(edge["kind"] != "POSSIBLE_CALL" for edge in incoming_without_candidates["edges"])
+    incoming_with_candidates = graph.neighbors(
+        encoder_module["id"], scope_type="repository", scope_id=repository["id"],
+        level="module", direction="incoming", include_candidates=True,
+    )
+    assert any(edge["kind"] == "POSSIBLE_CALL" and edge["source"] == ldpc_module["id"] for edge in incoming_with_candidates["edges"])
     default_graph = graph.graph("repository", repository["id"], "symbol", limit=200)
     assert "CALLS" in {edge["kind"] for edge in default_graph["edges"]}
     assert "POSSIBLE_CALL" not in {edge["kind"] for edge in default_graph["edges"]}

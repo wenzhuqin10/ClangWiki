@@ -432,15 +432,39 @@ class GraphService:
         # SQL traversal would otherwise return module-to-file containment edges
         # while the user is looking at module-to-module dependencies.
         if scope_type and scope_id and level != "symbol":
-            projected = self.graph(scope_type, scope_id, level, kinds, None, max(limit * 4, limit))
+            projected = self.graph(
+                scope_type,
+                scope_id,
+                level,
+                kinds,
+                None,
+                max(limit * 4, limit),
+                statuses=["confirmed", "candidate"] if include_candidates else ["confirmed"],
+            )
             projected_nodes = {node["id"]: node for node in projected.get("nodes", [])}
             if node_id not in projected_nodes:
                 raise KeyError("图谱节点不存在")
             projected_edges = list(projected.get("edges", []))
-            return _projected_neighbors(node_id, projected_nodes, projected_edges, depth, limit)
+            return _projected_neighbors(node_id, projected_nodes, projected_edges, depth, limit, direction)
         center_row = self.db.one("SELECT * FROM knowledge_nodes WHERE id=?", (node_id,))
         if not center_row:
             raise KeyError("图谱节点不存在")
+        scope_condition = ""
+        scope_parameters: tuple[Any, ...] = ()
+        if scope_type and scope_id:
+            allowed_repositories = self._scope_repositories(scope_type, scope_id)
+            if center_row.get("repository_id") not in allowed_repositories and center_row.get("collection_id") != scope_id:
+                raise KeyError("图谱节点不在当前范围内")
+            if not allowed_repositories:
+                return {"center": self._public_node(center_row), "nodes": [self._public_node(center_row)], "edges": [], "depth": 0, "relation_counts": {}, "truncated": False}
+            repository_placeholders = ",".join("?" for _ in allowed_repositories)
+            scope_condition = f" AND (repository_id IN ({repository_placeholders})"
+            scope_parameters = tuple(allowed_repositories)
+            if scope_type == "collection":
+                scope_condition += " OR collection_id=?)"
+                scope_parameters += (scope_id,)
+            else:
+                scope_condition += ")"
         depth = max(1, min(3, depth))
         requested = {item.upper() for item in (kinds or [])}
         seen = {node_id}
@@ -453,18 +477,18 @@ class GraphService:
             status_sql = "" if include_candidates else " AND status='confirmed'"
             if direction == "outgoing":
                 rows = self.db.all(
-                    f"SELECT * FROM knowledge_edges WHERE source_id IN ({placeholders}){status_sql} LIMIT ?",
-                    tuple(frontier) + (limit * 4,),
+                    f"SELECT * FROM knowledge_edges WHERE source_id IN ({placeholders}){status_sql}{scope_condition} LIMIT ?",
+                    tuple(frontier) + scope_parameters + (limit * 4,),
                 )
             elif direction == "incoming":
                 rows = self.db.all(
-                    f"SELECT * FROM knowledge_edges WHERE target_id IN ({placeholders}){status_sql} LIMIT ?",
-                    tuple(frontier) + (limit * 4,),
+                    f"SELECT * FROM knowledge_edges WHERE target_id IN ({placeholders}){status_sql}{scope_condition} LIMIT ?",
+                    tuple(frontier) + scope_parameters + (limit * 4,),
                 )
             else:
                 rows = self.db.all(
-                    f"SELECT * FROM knowledge_edges WHERE (source_id IN ({placeholders}) OR target_id IN ({placeholders})){status_sql} LIMIT ?",
-                    tuple(frontier) + tuple(frontier) + (limit * 4,),
+                    f"SELECT * FROM knowledge_edges WHERE (source_id IN ({placeholders}) OR target_id IN ({placeholders})){status_sql}{scope_condition} LIMIT ?",
+                    tuple(frontier) + tuple(frontier) + scope_parameters + (limit * 4,),
                 )
             next_frontier: set[str] = set()
             for row in rows:
@@ -1268,8 +1292,10 @@ def _projected_neighbors(
     edges: list[dict[str, Any]],
     depth: int,
     limit: int,
+    direction: str = "both",
 ) -> dict[str, Any]:
     depth = max(1, min(3, depth))
+    direction = direction if direction in {"incoming", "outgoing", "both"} else "both"
     seen = {node_id}
     frontier = {node_id}
     selected_edges: dict[str, dict[str, Any]] = {}
@@ -1278,10 +1304,19 @@ def _projected_neighbors(
             break
         next_frontier: set[str] = set()
         for edge in edges:
-            if edge["source"] not in frontier and edge["target"] not in frontier:
+            if direction == "outgoing":
+                touches_frontier = edge["source"] in frontier
+                endpoints = (edge["target"],)
+            elif direction == "incoming":
+                touches_frontier = edge["target"] in frontier
+                endpoints = (edge["source"],)
+            else:
+                touches_frontier = edge["source"] in frontier or edge["target"] in frontier
+                endpoints = (edge["source"], edge["target"])
+            if not touches_frontier:
                 continue
             selected_edges[edge["id"]] = edge
-            for endpoint in (edge["source"], edge["target"]):
+            for endpoint in endpoints:
                 if endpoint not in seen:
                     next_frontier.add(endpoint)
         seen.update(next_frontier)
