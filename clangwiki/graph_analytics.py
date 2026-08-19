@@ -35,7 +35,12 @@ class GraphAnalytics:
 
     def analyze(self, repository_id: str, run_id: str | None = None) -> dict[str, Any]:
         nodes = self.db.all(
-            "SELECT * FROM knowledge_nodes WHERE repository_id=? AND kind IN ('symbol','external')"
+            # External/unresolved nodes remain available in the graph for
+            # evidence, but standard types (``int``, ``uint32_t``...) can have
+            # enormous fan-out and would otherwise dominate hubs and
+            # communities.  Core/bridge analytics therefore rank repository
+            # symbols only.
+            "SELECT * FROM knowledge_nodes WHERE repository_id=? AND kind='symbol'"
             + (" AND run_id=?" if run_id else ""),
             (repository_id, run_id) if run_id else (repository_id,),
         )
@@ -89,7 +94,7 @@ class GraphAnalytics:
         degree = dict(graph.degree())
         in_degree = dict(graph.in_degree())
         out_degree = dict(graph.out_degree())
-        pagerank = nx.pagerank(graph, weight="weight") if graph.number_of_edges() else {node: 0.0 for node in graph}
+        pagerank = _pagerank_without_optional_numpy(graph) if graph.number_of_edges() else {node: 0.0 for node in graph}
         if graph.number_of_nodes() <= 2500:
             betweenness = nx.betweenness_centrality(graph, normalized=True, weight=None)
         else:
@@ -122,7 +127,12 @@ class GraphAnalytics:
             )
             for node_id in node_ids
         }
-        god_threshold = max(0.55, _percentile(list(god_scores.values()), 0.95)) if god_scores else 1.0
+        # The weighted score is intentionally conservative (domain evidence
+        # contributes only 0.10), so an absolute 0.55 cutoff hides every
+        # genuine hub in large repositories.  Use the distribution of the
+        # current graph and keep a modest floor so the coremap remains useful
+        # for both tiny fixtures and real baseband codebases.
+        god_threshold = max(0.20, _percentile(list(god_scores.values()), 0.95)) if god_scores else 1.0
         metric_rows = [{
             "node_id": node_id, "repository_id": repository_id, "run_id": run_id,
             "degree": float(degree.get(node_id, 0)), "in_degree": float(in_degree.get(node_id, 0)),
@@ -331,6 +341,25 @@ def _name_similarity(left: dict[str, Any], right: dict[str, Any]) -> float:
     if not left_tokens or not right_tokens:
         return 0.0
     return len(left_tokens & right_tokens) / max(1, len(left_tokens | right_tokens))
+
+
+def _pagerank_without_optional_numpy(graph: nx.DiGraph) -> dict[str, float]:
+    """Run PageRank without making the optional RAG numeric stack mandatory.
+
+    NetworkX 3.6 prefers its SciPy implementation when available, which
+    imports NumPy even for a small graph.  Graph construction is a core
+    feature and must remain usable on the lightweight offline installation,
+    so fall back to NetworkX's pure-Python implementation when NumPy/SciPy
+    are not installed.
+    """
+    try:
+        return nx.pagerank(graph, weight="weight")
+    except ModuleNotFoundError as exc:
+        if exc.name not in {"numpy", "scipy"}:
+            raise
+        from networkx.algorithms.link_analysis.pagerank_alg import _pagerank_python
+
+        return _pagerank_python(graph, weight="weight")
 
 
 def _digest(value: str) -> str:

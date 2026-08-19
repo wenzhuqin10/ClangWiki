@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Iterable
 
@@ -21,6 +23,8 @@ FUNCTION_RE = re.compile(
 )
 CALL_RE = re.compile(r'\b(?P<name>[A-Za-z_]\w*)\s*\(')
 CONTROL_WORDS = {"if", "for", "while", "switch", "return", "sizeof", "catch"}
+ANALYZER_BATCH_SIZE = 24
+ANALYZER_BATCH_WORKERS = max(1, min(4, os.cpu_count() or 1))
 
 
 def _line(text: str, offset: int) -> int:
@@ -60,12 +64,13 @@ class ClangAnalyzer:
         self.executable = Path(executable).expanduser() if executable else None
 
     def analyze(self, repo: Path, compilation_database: Path, output_dir: Path) -> AnalysisBundle:
+        output_dir = output_dir.expanduser().resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
         compiler = self._resolve_executable()
         bundle = AnalysisBundle(mode="partial")
         if compiler is not None:
             try:
-                complete = self._run_compiler_analyzer(compiler, repo, compilation_database, bundle)
+                complete = self._run_compiler_analyzer(compiler, repo, compilation_database, output_dir, bundle)
                 bundle.mode = "full" if complete else "partial"
             except (OSError, subprocess.SubprocessError, json.JSONDecodeError, AnalysisError) as exc:
                 bundle.diagnostics.append(f"libclang analyzer failed; lexical augmentation used: {exc}")
@@ -84,7 +89,14 @@ class ClangAnalyzer:
         found = shutil.which("clangwiki-analyzer") or shutil.which("cpp-analyzer")
         return Path(found) if found else None
 
-    def _run_compiler_analyzer(self, executable: Path, repo: Path, compdb: Path, bundle: AnalysisBundle) -> bool:
+    def _run_compiler_analyzer(
+        self,
+        executable: Path,
+        repo: Path,
+        compdb: Path,
+        output_dir: Path,
+        bundle: AnalysisBundle,
+    ) -> bool:
         entries = json.loads(compdb.read_text(encoding="utf-8"))
         units = []
         for item in entries:
@@ -94,16 +106,146 @@ class ClangAnalyzer:
                 units.append(str(source.resolve()))
         if not units:
             raise AnalysisError("compile_commands.json 中没有可访问的翻译单元。")
-        process = subprocess.run(
-            [str(executable), "-p", str(compdb.parent), "--repo-root", str(repo), *units],
-            cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=900, check=False,
+        # Passing every translation-unit path as an argv item exceeds the
+        # Windows command-line limit for large repositories.  Keep the list
+        # as an explicit UTF-8 artifact and pass only its short path.
+        # Keep the temporary list alongside the analysis artifacts.  A run's
+        # build directory may be a read-only snapshot (for example when the
+        # repository is served from a protected data root), while the output
+        # directory is the only location this stage needs to write.
+        # libclang's JSON database reader rejects ClangWiki's internal
+        # metadata fields (for example ``clangwiki_partial``) even though
+        # they are harmless to our own validator.  Feed it a normalized copy
+        # and leave the immutable run snapshot untouched.
+        analyzer_build_dir = output_dir / ".clangwiki-compdb"
+        analyzer_build_dir.mkdir(parents=True, exist_ok=True)
+        normalized_entries = []
+        for item in entries:
+            normalized = {
+                key: item[key]
+                for key in ("directory", "file", "arguments", "command")
+                if key in item
+            }
+            normalized_entries.append(normalized)
+        normalized_compdb = analyzer_build_dir / "compile_commands.json"
+        normalized_compdb.write_text(
+            json.dumps(normalized_entries, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
         )
-        if process.returncode != 0:
-            raise AnalysisError(process.stderr.strip() or f"exit code {process.returncode}")
-        analyzer_warnings = [line.strip() for line in process.stderr.splitlines() if line.strip()]
-        bundle.diagnostics.extend(f"libclang: {line}" for line in analyzer_warnings)
-        for raw in process.stdout.splitlines():
+        batches = [
+            (index, units[start:start + ANALYZER_BATCH_SIZE])
+            for index, start in enumerate(range(0, len(units), ANALYZER_BATCH_SIZE))
+        ]
+        # Probe one batch first so installations built before --sources-file
+        # can still use the bounded argv compatibility path below.
+        first_index, first_units = batches[0]
+        first = self._run_compiler_process(
+            executable, repo, analyzer_build_dir, output_dir, first_index, first_units,
+        )
+        if first[0] != 0 and "usage:" in first[2].lower():
+            return self._run_compiler_analyzer_batched(executable, repo, analyzer_build_dir, units, bundle)
+
+        complete = self._collect_compiler_result(bundle, first, first_index)
+        if len(batches) == 1:
+            return complete
+
+        # Large repositories are intentionally split across a small number of
+        # analyzer processes.  libclang is CPU-heavy and a single process can
+        # exceed the pipeline timeout before it reaches the later files.
+        with ThreadPoolExecutor(max_workers=min(ANALYZER_BATCH_WORKERS, len(batches) - 1)) as pool:
+            futures = {
+                pool.submit(
+                    self._run_compiler_process,
+                    executable, repo, analyzer_build_dir, output_dir, index, source_batch,
+                ): index
+                for index, source_batch in batches[1:]
+            }
+            results = []
+            for future in as_completed(futures):
+                results.append((futures[future], future.result()))
+        for index, result in sorted(results, key=lambda item: item[0]):
+            complete = self._collect_compiler_result(bundle, result, index) and complete
+        return complete
+
+    @staticmethod
+    def _run_compiler_process(
+        executable: Path,
+        repo: Path,
+        analyzer_build_dir: Path,
+        output_dir: Path,
+        batch_index: int,
+        units: list[str],
+    ) -> tuple[int, str, str]:
+        source_list = output_dir / f".clangwiki-sources-{batch_index:04d}.txt"
+        source_list.write_text("\n".join(units) + "\n", encoding="utf-8")
+        command = [
+            str(executable), "-p", str(analyzer_build_dir), "--repo-root", str(repo),
+            "--sources-file", str(source_list),
+        ]
+        try:
+            process = subprocess.run(
+                command, cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=300, check=False,
+            )
+            return process.returncode, process.stdout, process.stderr
+        except (OSError, subprocess.SubprocessError) as exc:
+            preview = ", ".join(Path(item).name for item in units[:6])
+            suffix = f"; batch sources: {preview}"
+            if len(units) > 6:
+                suffix += f" (+{len(units) - 6} more)"
+            return 1, "", f"{exc}{suffix}"
+
+    def _collect_compiler_result(
+        self,
+        bundle: AnalysisBundle,
+        result: tuple[int, str, str],
+        batch_index: int,
+    ) -> bool:
+        returncode, stdout, stderr = result
+        warnings = [line.strip() for line in stderr.splitlines() if line.strip()]
+        if returncode != 0:
+            detail = " ".join(warnings)[:1200] or f"exit code {returncode}"
+            bundle.diagnostics.append(f"libclang batch {batch_index} failed: {detail}")
+            return False
+        bundle.diagnostics.extend(f"libclang: {line}" for line in warnings)
+        self._append_compiler_records(stdout, bundle)
+        return not any(
+            marker in line.lower()
+            for line in warnings
+            for marker in ("failed to parse", "no compile command", "cannot enter")
+        )
+
+    def _run_compiler_analyzer_batched(
+        self,
+        executable: Path,
+        repo: Path,
+        compdb: Path,
+        units: list[str],
+        bundle: AnalysisBundle,
+    ) -> bool:
+        """Compatibility path for analyzers built before --sources-file."""
+        complete = True
+        for start in range(0, len(units), 24):
+            process = subprocess.run(
+                [str(executable), "-p", str(compdb), "--repo-root", str(repo), *units[start:start + 24]],
+                cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=900, check=False,
+            )
+            if process.returncode != 0:
+                raise AnalysisError(process.stderr.strip() or f"exit code {process.returncode}")
+            analyzer_warnings = [line.strip() for line in process.stderr.splitlines() if line.strip()]
+            bundle.diagnostics.extend(f"libclang: {line}" for line in analyzer_warnings)
+            complete = complete and not any(
+                marker in line.lower()
+                for line in analyzer_warnings
+                for marker in ("failed to parse", "no compile command", "cannot enter")
+            )
+            self._append_compiler_records(process.stdout, bundle)
+        return complete
+
+    @staticmethod
+    def _append_compiler_records(stdout: str, bundle: AnalysisBundle) -> None:
+        for raw in stdout.splitlines():
             if not raw.strip():
                 continue
             record = json.loads(raw)
@@ -111,11 +253,6 @@ class ClangAnalyzer:
                 bundle.symbols.append(record)
             elif record.get("record") == "relation":
                 bundle.relations.append(record)
-        return not any(
-            marker in line.lower()
-            for line in analyzer_warnings
-            for marker in ("failed to parse", "no compile command", "cannot enter")
-        )
 
     def _lexical_augment(self, repo: Path, bundle: AnalysisBundle) -> None:
         existing_files = {row.get("file_path") for row in bundle.symbols}

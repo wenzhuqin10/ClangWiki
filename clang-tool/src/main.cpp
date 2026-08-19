@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -14,6 +15,10 @@ static std::string text(CXString value) {
   std::string result = raw ? raw : "";
   clang_disposeString(value);
   return result;
+}
+
+static std::string utf8(const fs::path& value) {
+  return value.u8string();
 }
 
 static std::string jsonEscape(const std::string& value) {
@@ -191,7 +196,7 @@ class Analyzer {
     unsigned line = 0, column = 0, offset = 0;
     clang_getSpellingLocation(clang_getCursorLocation(cursor), &file, &line, &column, &offset);
     if (!file) return {};
-    fs::path path = fs::weakly_canonical(fs::path(text(clang_getFileName(file))));
+    fs::path path = fs::weakly_canonical(fs::u8path(text(clang_getFileName(file))));
     std::error_code error;
     fs::path relative = fs::relative(path, root_, error);
     const std::string generic = relative.generic_string();
@@ -256,7 +261,8 @@ class Analyzer {
 };
 
 static void usage() {
-  std::cerr << "Usage: clangwiki-analyzer -p <compdb-dir> --repo-root <repo> <source>...\n";
+  std::cerr << "Usage: clangwiki-analyzer -p <compdb-dir> --repo-root <repo> "
+               "[--sources-file <file> | <source>...]\n";
 }
 
 static std::vector<std::string> commandArguments(CXCompileCommand command, const fs::path& source) {
@@ -270,29 +276,43 @@ static std::vector<std::string> commandArguments(CXCompileCommand command, const
     if (argument == "-o") { skipNext = true; continue; }
     if (argument.rfind("/Fo", 0) == 0) continue;
     std::error_code error;
-    fs::path candidate = fs::weakly_canonical(fs::path(argument), error);
+    fs::path candidate = fs::weakly_canonical(fs::u8path(argument), error);
     if (!error && candidate == fs::weakly_canonical(source)) continue;
     result.push_back(std::move(argument));
   }
   return result;
 }
 
-int main(int argc, char** argv) {
+int wmain(int argc, wchar_t** argv) {
   fs::path databaseDirectory;
   fs::path repositoryRoot;
+  fs::path sourceList;
   std::vector<fs::path> sources;
   for (int index = 1; index < argc; ++index) {
-    std::string argument = argv[index];
-    if (argument == "-p" && index + 1 < argc) databaseDirectory = argv[++index];
-    else if (argument == "--repo-root" && index + 1 < argc) repositoryRoot = argv[++index];
-    else if (argument == "--help" || argument == "-h") { usage(); return 0; }
-    else sources.emplace_back(argument);
+    std::wstring argument = argv[index];
+    if (argument == L"-p" && index + 1 < argc) databaseDirectory = fs::path(argv[++index]);
+    else if (argument == L"--repo-root" && index + 1 < argc) repositoryRoot = fs::path(argv[++index]);
+    else if (argument == L"--sources-file" && index + 1 < argc) sourceList = fs::path(argv[++index]);
+    else if (argument == L"--help" || argument == L"-h") { usage(); return 0; }
+    else sources.emplace_back(fs::path(argv[index]));
+  }
+  if (!sourceList.empty()) {
+    std::ifstream input(sourceList, std::ios::binary);
+    if (!input) {
+      std::cerr << "Cannot open source list " << sourceList.string() << "\n";
+      return 2;
+    }
+    std::string line;
+    while (std::getline(input, line)) {
+      if (!line.empty() && line.back() == '\r') line.pop_back();
+      if (!line.empty()) sources.emplace_back(fs::u8path(line));
+    }
   }
   if (databaseDirectory.empty() || repositoryRoot.empty() || sources.empty()) { usage(); return 2; }
 
   CXCompilationDatabase_Error databaseError;
   CXCompilationDatabase database = clang_CompilationDatabase_fromDirectory(
-      databaseDirectory.string().c_str(), &databaseError);
+      utf8(databaseDirectory).c_str(), &databaseError);
   if (databaseError != CXCompilationDatabase_NoError) {
     std::cerr << "Cannot open compile_commands.json in " << databaseDirectory << "\n";
     return 2;
@@ -302,7 +322,7 @@ int main(int argc, char** argv) {
   int parsed = 0;
   for (const fs::path& source : sources) {
     const fs::path absolute = fs::weakly_canonical(source);
-    CXCompileCommands commands = clang_CompilationDatabase_getCompileCommands(database, absolute.string().c_str());
+    CXCompileCommands commands = clang_CompilationDatabase_getCompileCommands(database, utf8(absolute).c_str());
     if (clang_CompileCommands_getSize(commands) == 0) {
       std::cerr << "No compile command for " << absolute << "\n";
       clang_CompileCommands_dispose(commands);
@@ -310,7 +330,7 @@ int main(int argc, char** argv) {
     }
     CXCompileCommand command = clang_CompileCommands_getCommand(commands, 0);
     const fs::path previousDirectory = fs::current_path();
-    const fs::path commandDirectory = fs::path(text(clang_CompileCommand_getDirectory(command)));
+    const fs::path commandDirectory = fs::u8path(text(clang_CompileCommand_getDirectory(command)));
     std::error_code directoryError;
     fs::current_path(commandDirectory, directoryError);
     if (directoryError) {
@@ -324,7 +344,7 @@ int main(int argc, char** argv) {
     for (const auto& argument : arguments) raw.push_back(argument.c_str());
 
     CXTranslationUnit unit = nullptr;
-    CXErrorCode error = clang_parseTranslationUnit2(index, absolute.string().c_str(), raw.data(),
+    CXErrorCode error = clang_parseTranslationUnit2(index, utf8(absolute).c_str(), raw.data(),
         static_cast<int>(raw.size()), nullptr, 0, CXTranslationUnit_DetailedPreprocessingRecord, &unit);
     fs::current_path(previousDirectory, directoryError);
     if (error != CXError_Success || !unit) {
