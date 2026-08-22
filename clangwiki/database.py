@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Iterator, Sequence
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class Database:
@@ -84,6 +84,9 @@ class Database:
             if version < 4:
                 self._migrate_v4(connection)
                 version = 4
+            if version < 5:
+                self._migrate_v5(connection)
+                version = 5
             connection.execute(f"PRAGMA user_version = {version}")
             connection.commit()
 
@@ -540,6 +543,21 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_graph_insights_repo
                 ON graph_insights(repository_id, run_id, kind, score);
             """
+        )
+
+    @staticmethod
+    def _migrate_v5(connection: sqlite3.Connection) -> None:
+        """Persist optional 3D layout coordinates without changing 2D callers."""
+        columns = {
+            "dimension": "TEXT NOT NULL DEFAULT '2d'",
+            "z": "REAL NOT NULL DEFAULT 0.0",
+        }
+        existing = {row[1] for row in connection.execute("PRAGMA table_info(graph_layouts)").fetchall()}
+        for name, declaration in columns.items():
+            if name not in existing:
+                connection.execute(f"ALTER TABLE graph_layouts ADD COLUMN {name} {declaration}")
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_graph_layouts_view ON graph_layouts(repository_id, run_id, view_key, dimension)"
         )
 
 

@@ -221,6 +221,20 @@ def test_graph_and_logical_collection_keep_repositories_isolated(tmp_path: Path)
     assert graph.json()["relation_counts"]["CALLS"] == 1
     assert next(edge for edge in graph.json()["edges"] if edge["kind"] == "CALLS")["relation_label"] == "调用"
     pdsch_node = next(node for node in graph.json()["nodes"] if node["name"] == "pdsch_encode")
+    symbol_search = client.get(
+        f"/api/graph/symbol-search?scope_type=repository&scope_id={first['id']}&query=pdsch_encode",
+    )
+    assert symbol_search.status_code == 200
+    assert any(item["id"] == pdsch_node["id"] for item in symbol_search.json()["results"])
+    core_functions = client.get(f"/api/graph/core-functions?repository_id={first['id']}&limit=5")
+    assert core_functions.status_code == 200
+    assert core_functions.json()["nodes"]
+    impact = client.post("/api/graph/impact", json={
+        "scope_type": "repository", "scope_id": first["id"], "anchor_id": pdsch_node["id"],
+        "change_kind": "implementation", "depth": 2,
+    })
+    assert impact.status_code == 200
+    assert impact.json()["anchor"]["id"] == pdsch_node["id"]
     neighbors = client.get(f"/api/graph/neighbors?node_id={pdsch_node['id']}&depth=1")
     assert neighbors.status_code == 200
     assert neighbors.json()["center"]["id"] == pdsch_node["id"]

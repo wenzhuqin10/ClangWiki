@@ -11,7 +11,7 @@ cytoscape.use(svg);
 
 type GraphPayload = { nodes: any[]; edges: any[]; truncated?: boolean };
 type Level = "repository" | "module" | "file" | "symbol";
-type GraphView = "hierarchy" | "community" | "dependency" | "callflow" | "dataflow" | "interface" | "knowledge" | "coremap" | "surprises";
+type GraphView = "hierarchy" | "callflow" | "dataflow" | "impact" | "community" | "dependency" | "interface" | "knowledge" | "coremap" | "surprises";
 type Props = {
   graph: GraphPayload;
   level: Level;
@@ -34,6 +34,8 @@ const relationColors: Record<string, string> = {
   CONTAINS: "#8d98aa", DEPENDS_ON: "#6674da", INCLUDES: "#43a080", CALLS: "#4f5fd3",
   POSSIBLE_CALL: "#d59649", REFERENCES: "#9d62b4", READS: "#3d91b7", WRITES: "#d55f6b",
   USES_TYPE: "#71839b", CONFIGURES: "#ba6b3d", IMPLEMENTS_CHANNEL: "#d55f6b",
+  ALLOCATES: "#c77b51", INITIALIZES: "#ad9b56", OWNS: "#a469c0", BORROWS: "#6a9cc4",
+  RELEASES: "#d26d66", LOCKS: "#b8784f", UNLOCKS: "#70a587",
   PARTICIPATES_IN: "#b38842", DOCUMENTS: "#9c6ad6", MATCHES_DECLARATION: "#4c70a8",
   SURPRISING_CONNECTION: "#ffb347",
 };
@@ -86,9 +88,10 @@ export default function GraphCanvas({
     const elements = [
       ...graph.nodes.map((node) => ({ data: {
         ...node, label: nodeLabel(node, level), size: node.metrics?.is_hub ? Math.max(56, sizeFor(node, level) * 1.45) : sizeFor(node, level),
-        fill: node.color || nodeColors[String(node.kind)] || "#8b93a4",
+         fill: node.impact_tier === 0 ? "#ff9b3d" : node.impact_tier === 1 ? "#e86d5c" : node.impact_tier === 2 ? "#d59c4a" : node.impact_tier === 3 ? "#6485be" : node.color || nodeColors[String(node.kind)] || "#8b93a4",
         shape: focusView || view === "community" ? "ellipse" : shapeFor(node), compact: showLabels && (!focusView || Boolean(node.metrics?.is_hub) || endpointIds.has(node.id)) ? "false" : "true",
-        god: node.metrics?.is_hub ? "true" : "false",
+         god: node.metrics?.is_hub || node.impact_tier === 0 ? "true" : "false",
+         impactTier: String(node.impact_tier ?? ""),
         focusEndpoint: endpointIds.has(node.id) ? "true" : "false",
         path: pathNodeIds.includes(node.id) ? "true" : "false",
       }, position: positions.get(node.id) })),
@@ -113,7 +116,7 @@ export default function GraphCanvas({
           "border-width": 1.2, "border-color": "#202733", "overlay-opacity": 0,
         } },
         { selector: "node[compact = 'true']", style: { label: "" } },
-        { selector: "node[god = 'true']", style: {
+         { selector: "node[god = 'true']", style: {
           "background-color": "#ff9b3d", "border-color": "#ffd49a", "border-width": 3,
           "underlay-color": "#ff8a36", "underlay-opacity": 0.62, "underlay-padding": 18, "underlay-shape": "ellipse",
           "z-index": 20,
@@ -121,13 +124,16 @@ export default function GraphCanvas({
           "text-valign": "center", "text-margin-y": 0,
           "text-background-color": "#19130e", "text-background-opacity": 0.18,
           "text-background-padding": "3px",
-        } },
+         } },
+         { selector: "node[impactTier = '1']", style: { "border-color": "#ff7669", "border-width": 3 } },
+         { selector: "node[impactTier = '2']", style: { "border-color": "#e3b15d", "border-width": 2.2 } },
+         { selector: "node[impactTier = '3']", style: { "border-color": "#83a9e4", "border-width": 2 } },
         { selector: "node[focusEndpoint = 'true']", style: { "border-color": "#ffcf70", "border-width": 2.5 } },
         { selector: "node[path = 'true']", style: { "border-color": "#161a25", "border-width": 4, label: "data(label)", "z-index": 12 } },
         { selector: "node:selected", style: { "border-color": "#161a25", "border-width": 4, label: "data(label)", "z-index": 15 } },
         { selector: "edge", style: {
           width: "data(aggregateWidth)", "line-color": "data(edgeColor)", "target-arrow-color": "data(edgeColor)",
-          "target-arrow-shape": "triangle", "curve-style": ["community", "coremap", "surprises"].includes(view) ? "bezier" : "taxi",
+           "target-arrow-shape": "triangle", "curve-style": ["community", "coremap", "surprises", "impact"].includes(view) ? "bezier" : "taxi",
           "taxi-direction": "rightward", "arrow-scale": 0.55, opacity: focusView ? 0.48 : 0.44, label: "data(label)",
           color: "#cbd5e8", "font-size": 8, "font-family": "Inter, Microsoft YaHei UI, sans-serif",
           "min-zoomed-font-size": 7, "text-background-color": "#11141b", "text-background-opacity": 0.9,

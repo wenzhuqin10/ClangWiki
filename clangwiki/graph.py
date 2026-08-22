@@ -20,6 +20,7 @@ GRAPH_KINDS = {
     "MEMBER_OF", "HAS_PARAMETER", "HAS_FIELD", "HAS_VALUE", "DEPENDS_ON", "INCLUDES",
     "CALLS", "POSSIBLE_CALL", "REFERENCES", "READS", "WRITES", "USES_TYPE", "PASSES_TO",
     "RETURNS_TYPE", "REGISTER_CALLBACK", "INVOKES_CALLBACK", "INHERITS", "GUARDED_BY",
+    "ALLOCATES", "INITIALIZES", "OWNS", "BORROWS", "RELEASES", "LOCKS", "UNLOCKS",
     "IMPLEMENTS_CHANNEL", "PARTICIPATES_IN", "PRECEDES", "TRIGGERS", "SENDS", "RECEIVES",
     "PRODUCES", "CONSUMES", "CONFIGURES", "TRANSITIONS_TO", "RUNS_IN", "LOGS", "ASSERTS",
     "SPECIFIED_BY", "TESTS", "VALIDATES", "DOCUMENTS", "MENTIONS", "EXPLAINS",
@@ -45,6 +46,13 @@ GRAPH_RELATION_LABELS = {
     "REGISTER_CALLBACK": "注册回调",
     "INVOKES_CALLBACK": "触发回调",
     "INHERITS": "继承",
+    "ALLOCATES": "分配",
+    "INITIALIZES": "初始化",
+    "OWNS": "拥有",
+    "BORROWS": "借用",
+    "RELEASES": "释放",
+    "LOCKS": "加锁",
+    "UNLOCKS": "解锁",
     "IMPLEMENTS_CHANNEL": "实现信道",
     "PARTICIPATES_IN": "参与流程",
     "CONFIGURES": "配置",
@@ -66,6 +74,13 @@ GRAPH_NODE_LABELS = {
     "domain": "基带领域",
     "document": "文档",
     "community": "耦合群",
+    "translation_unit": "编译单元",
+    "build_target": "构建目标",
+}
+
+CORE_ENTRY_NAMES = {
+    "main", "init", "initialize", "start", "run", "process", "handle", "dispatch",
+    "worker", "thread", "task", "callback", "notify", "indication", "request",
 }
 
 
@@ -321,6 +336,234 @@ class GraphService:
             (1 if confirmed else 0, certainty, status, edge_id),
         )
         return self.db.one("SELECT * FROM knowledge_edges WHERE id=?", (edge_id,)) or {}
+
+    def symbol_search(
+        self,
+        scope_type: str,
+        scope_id: str,
+        query: str,
+        module_id: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """Search the complete symbol store, independent of the visible canvas."""
+        value = query.strip()
+        if not value:
+            return {"results": [], "total": 0, "query": value}
+        repository_ids = self._scope_repositories(scope_type, scope_id)
+        if not repository_ids:
+            return {"results": [], "total": 0, "query": value}
+        placeholders = ",".join("?" for _ in repository_ids)
+        conditions = [
+            f"n.repository_id IN ({placeholders})",
+            "n.kind='symbol'",
+            "n.subtype IN ('function','method')",
+            "(LOWER(n.name) LIKE ? OR LOWER(n.qualified_name) LIKE ? OR LOWER(n.path) LIKE ?)",
+        ]
+        params: list[Any] = [*repository_ids, f"%{value.casefold()}%", f"%{value.casefold()}%", f"%{value.casefold()}%"]
+        if module_id:
+            conditions.append("n.module_id=?")
+            params.append(module_id)
+        cap = max(1, min(limit, 100))
+        count_row = self.db.one(
+            "SELECT COUNT(*) AS total FROM knowledge_nodes n WHERE " + " AND ".join(conditions),
+            tuple(params),
+        ) or {}
+        rows = self.db.all(
+            "SELECT n.*,m.degree,m.in_degree,m.out_degree,m.betweenness,m.pagerank,m.is_hub,m.is_bridge,m.is_orphan,"
+            "m.god_score,m.god_type,m.community_span,m.fan_in,m.fan_out "
+            "FROM knowledge_nodes n LEFT JOIN graph_metrics m ON m.node_id=n.id AND (m.run_id=n.run_id OR m.run_id IS NULL) "
+            "WHERE " + " AND ".join(conditions) + " "
+            "ORDER BY CASE WHEN LOWER(n.name)=? THEN 0 WHEN LOWER(n.qualified_name)=? THEN 1 ELSE 2 END, "
+            "COALESCE(m.god_score,0) DESC, COALESCE(m.pagerank,0) DESC, n.name LIMIT ?",
+            tuple(params + [value.casefold(), value.casefold(), cap]),
+        )
+        return {
+            "query": value,
+            "results": [self._public_node(row) for row in rows],
+            "total": int(count_row.get("total") or 0),
+            "truncated": int(count_row.get("total") or 0) > cap,
+        }
+
+    def core_functions(
+        self,
+        repository_id: str,
+        module_id: str | None = None,
+        limit: int = 80,
+    ) -> dict[str, Any]:
+        """Return a small, reproducible set of important functions for navigation."""
+        conditions = ["n.repository_id=?", "n.kind='symbol'", "n.subtype IN ('function','method')"]
+        params: list[Any] = [repository_id]
+        if module_id:
+            conditions.append("n.module_id=?")
+            params.append(module_id)
+        rows = self.db.all(
+            "SELECT n.*,m.degree,m.in_degree,m.out_degree,m.betweenness,m.pagerank,m.is_hub,m.is_bridge,m.is_orphan,"
+            "m.god_score,m.god_type,m.community_span,m.fan_in,m.fan_out "
+            "FROM knowledge_nodes n LEFT JOIN graph_metrics m ON m.node_id=n.id AND (m.run_id=n.run_id OR m.run_id IS NULL) "
+            "WHERE " + " AND ".join(conditions), tuple(params),
+        )
+        if not rows:
+            return {"nodes": [], "edges": [], "total": 0, "limit": limit, "truncated": False, "diagnostics": self.diagnostics(repository_id)}
+
+        def number(row: dict[str, Any], key: str) -> float:
+            return float(row.get(key) or 0.0)
+
+        maxima = {key: max((number(row, key) for row in rows), default=1.0) or 1.0 for key in ("pagerank", "betweenness", "in_degree", "out_degree", "community_span")}
+
+        def score(row: dict[str, Any]) -> tuple[float, str]:
+            name = str(row.get("name") or "").casefold()
+            metadata = json_loads(row.get("metadata_json"), {})
+            entry = name in CORE_ENTRY_NAMES or any(token in name for token in ("thread", "worker", "callback", "handler", "dispatch"))
+            bridge = bool(row.get("is_bridge")) or number(row, "community_span") > 0
+            public = bool(metadata.get("public") or metadata.get("is_public") or metadata.get("declaration_file"))
+            value = (
+                0.30 * number(row, "pagerank") / maxima["pagerank"]
+                + 0.20 * number(row, "betweenness") / maxima["betweenness"]
+                + 0.15 * number(row, "in_degree") / maxima["in_degree"]
+                + 0.10 * number(row, "out_degree") / maxima["out_degree"]
+                + 0.15 * (1.0 if bridge else 0.0)
+                + 0.05 * (1.0 if public else 0.0)
+                + 0.05 * (1.0 if metadata.get("wiki_mentioned") else 0.0)
+            )
+            if entry:
+                value += 0.35
+            reason = "入口或任务函数" if entry else "中心性或跨模块关系"
+            if bridge:
+                reason += "、跨模块桥梁"
+            return value, reason
+
+        ranked = []
+        for row in rows:
+            item = self._public_node(row)
+            item["metrics"]["core_score"] = round(score(row)[0], 6)
+            item["core_reason"] = score(row)[1]
+            ranked.append(item)
+        ranked.sort(key=lambda item: (-float(item["metrics"].get("core_score") or 0), str(item.get("qualified_name") or item.get("name"))))
+        cap = max(1, min(limit, 200))
+        selected = ranked[:cap]
+        selected_ids = {item["id"] for item in selected}
+        if selected_ids:
+            placeholders = ",".join("?" for _ in selected_ids)
+            edge_rows = self.db.all(
+                f"SELECT * FROM knowledge_edges WHERE repository_id=? AND status='confirmed' AND source_id IN ({placeholders}) AND target_id IN ({placeholders}) LIMIT ?",
+                tuple([repository_id, *selected_ids, *selected_ids, cap * 4]),
+            )
+        else:
+            edge_rows = []
+        diagnostics = self.diagnostics(repository_id)
+        return {
+            "nodes": selected,
+            "edges": [self._public_edge(row) for row in edge_rows],
+            "total": len(ranked),
+            "limit": cap,
+            "truncated": len(ranked) > cap,
+            "analysis_mode": diagnostics.get("analysis_mode", "unknown"),
+            "diagnostics": diagnostics,
+        }
+
+    def impact(
+        self,
+        scope_type: str,
+        scope_id: str,
+        anchor_id: str,
+        change_kind: str = "implementation",
+        depth: int = 2,
+        include_candidates: bool = False,
+        limit: int = 250,
+    ) -> dict[str, Any]:
+        """Compute a bounded, evidence-backed change impact projection."""
+        anchor = self.db.one("SELECT * FROM knowledge_nodes WHERE id=?", (anchor_id,))
+        if not anchor:
+            raise KeyError("变更锚点不存在")
+        allowed = self._scope_repositories(scope_type, scope_id)
+        if anchor.get("repository_id") not in allowed and anchor.get("collection_id") != scope_id:
+            raise KeyError("变更锚点不在当前范围内")
+        policies: dict[str, set[str]] = {
+            "implementation": {"CALLS", "INVOKES_CALLBACK", "REGISTER_CALLBACK", "READS", "WRITES", "TESTS", "DOCUMENTS"},
+            "signature": {"DECLARES", "DEFINES", "DECLARATION_OF", "CALLS", "POSSIBLE_CALL", "REGISTER_CALLBACK", "INVOKES_CALLBACK", "USES_TYPE", "TESTS", "DOCUMENTS"},
+            "data_layout": {"HAS_FIELD", "USES_TYPE", "READS", "WRITES", "PASSES_TO", "PRODUCES", "CONSUMES", "TESTS", "DOCUMENTS"},
+            "header": {"INCLUDES", "COMPILES", "BUILDS", "USES_TYPE", "TESTS", "DOCUMENTS"},
+            "interface": {"PROVIDES_INTERFACE", "CONSUMES_INTERFACE", "MATCHES_DECLARATION", "SENDS", "RECEIVES", "PRODUCES", "CONSUMES", "TESTS", "DOCUMENTS"},
+            "config": {"CONFIGURES", "GUARDED_BY", "COMPILES", "READS", "WRITES", "TESTS", "DOCUMENTS"},
+            "module": set(GRAPH_KINDS),
+        }
+        kinds = policies.get(change_kind, policies["implementation"])
+        max_depth = max(1, min(depth, 3))
+        status_sql = "" if include_candidates else " AND status='confirmed'"
+        allowed_repositories = tuple(allowed)
+        repository_placeholders = ",".join("?" for _ in allowed_repositories)
+        scope_sql = f" AND (repository_id IN ({repository_placeholders})"
+        scope_params: tuple[Any, ...] = allowed_repositories
+        if scope_type == "collection":
+            scope_sql += " OR collection_id=?)"
+            scope_params += (scope_id,)
+        else:
+            scope_sql += ")"
+        seen = {anchor_id: 0}
+        edge_rows: dict[str, dict[str, Any]] = {}
+        frontier = {anchor_id}
+        for current_depth in range(1, max_depth + 1):
+            if not frontier or len(seen) >= min(limit, 500):
+                break
+            placeholders = ",".join("?" for _ in frontier)
+            rows = self.db.all(
+                f"SELECT * FROM knowledge_edges WHERE (source_id IN ({placeholders}) OR target_id IN ({placeholders})){status_sql}{scope_sql} LIMIT ?",
+                tuple(frontier) + tuple(frontier) + scope_params + (min(limit, 500) * 8,),
+            )
+            next_frontier: set[str] = set()
+            for row in rows:
+                if row["kind"] not in kinds:
+                    continue
+                edge_rows[row["id"]] = row
+                for node_id in (row["source_id"], row["target_id"]):
+                    if node_id not in seen:
+                        seen[node_id] = current_depth
+                        next_frontier.add(node_id)
+            frontier = next_frontier
+        node_rows = self._nodes_by_ids(list(seen))
+        public_nodes = []
+        for row in node_rows:
+            item = self._public_node(row)
+            tier = seen.get(row["id"], max_depth)
+            if row["id"] == anchor_id:
+                item["impact_tier"] = 0
+                item["impact_label"] = "变更锚点"
+            elif row.get("kind") in {"document", "build_target", "translation_unit"} or any(edge["target_id"] == row["id"] and edge["kind"] in {"TESTS", "DOCUMENTS", "BUILDS", "COMPILES"} for edge in edge_rows.values()):
+                item["impact_tier"] = 3
+                item["impact_label"] = "需要验证"
+            elif tier == 1 and all((edge.get("status") or "confirmed") == "confirmed" for edge in edge_rows.values() if row["id"] in (edge["source_id"], edge["target_id"])):
+                item["impact_tier"] = 1
+                item["impact_label"] = "必须检查"
+            else:
+                item["impact_tier"] = 2
+                item["impact_label"] = "可能需要修改"
+            public_nodes.append(item)
+        public_nodes.sort(key=lambda item: (int(item.get("impact_tier") or 9), str(item.get("display_name") or item.get("id"))))
+        public_edges = [self._public_edge(row) for row in edge_rows.values() if row["source_id"] in seen and row["target_id"] in seen]
+        public_edges.sort(key=lambda edge: (edge.get("status") != "confirmed", edge.get("kind") or "", edge.get("id") or ""))
+        cap = max(1, min(limit, 500))
+        grouped = {"must_review": [], "possible_change": [], "verify": [], "uncertain": []}
+        for item in public_nodes:
+            if item["impact_tier"] == 1:
+                grouped["must_review"].append(item["id"])
+            elif item["impact_tier"] == 2:
+                grouped["possible_change"].append(item["id"])
+            elif item["impact_tier"] == 3:
+                grouped["verify"].append(item["id"])
+            elif item["impact_tier"] > 3:
+                grouped["uncertain"].append(item["id"])
+        return {
+            "anchor": self._public_node(anchor),
+            "change_kind": change_kind,
+            "nodes": public_nodes[:cap],
+            "edges": public_edges[: cap * 3],
+            "impact_tiers": grouped,
+            "displayed_nodes": min(len(public_nodes), cap),
+            "total_matching_nodes": len(public_nodes),
+            "hidden_nodes": max(0, len(public_nodes) - cap),
+            "truncated": len(public_nodes) > cap or len(public_edges) > cap * 3,
+            "diagnostics": self.diagnostics(allowed[0]) if len(allowed) == 1 else {},
+        }
 
     def graph(
         self,
@@ -851,6 +1094,11 @@ class GraphService:
             return f"file:{repository_id}:{path}" if repository_id and path else None
 
         aggregate_edges: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+        member_counts: dict[str, int] = defaultdict(int)
+        for item in node_map.values():
+            owner_id = owner(item)
+            if owner_id:
+                member_counts[owner_id] += 1
         used: set[str] = set()
         for edge in edges:
             source_node = node_map.get(edge["source_id"])
@@ -917,15 +1165,26 @@ class GraphService:
                         None,
                     )
             if node:
-                public_nodes.append(node)
+                value = dict(node)
+                value["member_count"] = member_counts.get(node_id, 1)
+                value["hidden_node_count"] = max(0, value["member_count"] - 1)
+                public_nodes.append(value)
             elif node_id.startswith("repo:"):
                 repository_id = node_id.split(":", 1)[1]
                 repository = self.registry.get_repository(repository_id)
                 public_nodes.append({"id": node_id, "repository_id": repository_id, "kind": "repository", "name": repository["name"], "path": repository["path"]})
         edge_values = list(aggregate_edges.values())
+        displayed_nodes = public_nodes[:limit]
+        displayed_edges = edge_values[:limit]
         return {
-            "nodes": public_nodes[:limit],
-            "edges": edge_values[:limit],
+            "nodes": displayed_nodes,
+            "edges": displayed_edges,
+            "displayed_nodes": len(displayed_nodes),
+            "total_matching_nodes": len(public_nodes),
+            "hidden_nodes": max(0, len(public_nodes) - len(displayed_nodes)),
+            "displayed_edges": len(displayed_edges),
+            "total_matching_edges": len(edge_values),
+            "hidden_edges": max(0, len(edge_values) - len(displayed_edges)),
             "truncated": len(edge_values) > limit or len(public_nodes) > limit,
             "relation_counts": _relation_counts(edge_values),
         }

@@ -33,9 +33,11 @@ def test_v1_database_migrates_to_evidence_graph(tmp_path: Path) -> None:
     node_columns = {row["name"] for row in database.all("PRAGMA table_info(knowledge_nodes)")}
     edge_columns = {row["name"] for row in database.all("PRAGMA table_info(knowledge_edges)")}
     metric_columns = {row["name"] for row in database.all("PRAGMA table_info(graph_metrics)")}
+    layout_columns = {row["name"] for row in database.all("PRAGMA table_info(graph_layouts)")}
     assert {"layer", "subtype", "stable_key", "community_id"} <= node_columns
     assert {"status", "origin", "weight", "evidence_count"} <= edge_columns
     assert {"god_score", "god_type", "community_span", "fan_in", "fan_out"} <= metric_columns
+    assert {"dimension", "z"} <= layout_columns
 
 
 def test_v3_database_receives_god_node_migration(tmp_path: Path) -> None:
@@ -50,7 +52,7 @@ def test_v3_database_receives_god_node_migration(tmp_path: Path) -> None:
     connection.close()
 
     database = Database(data_root)
-    assert database.connection().execute("PRAGMA user_version").fetchone()[0] == 4
+    assert database.connection().execute("PRAGMA user_version").fetchone()[0] == 5
     metric_columns = {row["name"] for row in database.all("PRAGMA table_info(graph_metrics)")}
     assert "god_score" in metric_columns
     assert database.one("SELECT name FROM sqlite_master WHERE type='table' AND name='graph_insights'")
@@ -147,6 +149,15 @@ def test_graph_v2_keeps_candidates_out_of_confirmed_paths(tmp_path: Path, monkey
     assert surprise_graph["focus"] == "surprising_connections"
     assert all(edge["kind"] == "SURPRISING_CONNECTION" for edge in surprise_graph["edges"])
     assert graph.insights(repository["id"], "surprising_connection")
+    symbol_results = graph.symbol_search("repository", repository["id"], "pdsch_encode", limit=5)
+    assert symbol_results["total"] >= 1
+    assert any(item["name"] == "pdsch_encode" for item in symbol_results["results"])
+    core_functions = graph.core_functions(repository["id"], limit=2)
+    assert core_functions["nodes"]
+    assert len(core_functions["nodes"]) <= 2
+    impact = graph.impact("repository", repository["id"], call["source"], "implementation", depth=2)
+    assert impact["anchor"]["id"] == call["source"]
+    assert call["target"] in impact["impact_tiers"]["must_review"]
     assert call["origin"] == "compiler" and call["evidence_count"] == 1
     detail = graph.node_detail(call["source"])
     assert any(edge["evidence"] for edge in detail["edges"] if edge["kind"] == "CALLS")

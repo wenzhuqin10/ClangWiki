@@ -113,6 +113,32 @@ class GraphPathRequest(StrictModel):
     include_candidates: bool = False
 
 
+class GraphImpactRequest(StrictModel):
+    scope_type: Literal["repository", "collection"]
+    scope_id: str
+    anchor_id: str
+    change_kind: Literal["implementation", "signature", "data_layout", "header", "interface", "config", "module"] = "implementation"
+    depth: int = Field(default=2, ge=1, le=3)
+    include_candidates: bool = False
+    limit: int = Field(default=250, ge=1, le=500)
+
+
+class GraphQueryRequest(StrictModel):
+    scope_type: Literal["repository", "collection"]
+    scope_id: str
+    level: Literal["repository", "module", "file", "symbol"] = "module"
+    view: str | None = None
+    kinds: list[str] | None = None
+    certainty: str | None = None
+    layers: list[str] | None = None
+    statuses: list[str] | None = None
+    community_id: str | None = None
+    min_degree: int = Field(default=0, ge=0)
+    limit: int = Field(default=250, ge=1, le=2500)
+    query: str | None = None
+    module_id: str | None = None
+
+
 class SettingsUpdate(StrictModel):
     values: dict[str, Any]
 
@@ -344,6 +370,35 @@ def create_app(data_root: Path, web_root: Path | None = None) -> FastAPI:
         return services.graph.neighbors(
             node_id, depth, kinds, min(limit, 500), scope_type=scope_type, scope_id=scope_id,
             level=level, direction=direction, include_candidates=include_candidates,
+        )
+
+    @app.get("/api/graph/symbol-search")
+    def graph_symbol_search(
+        scope_type: Literal["repository", "collection"], scope_id: str, query: str,
+        module_id: str | None = None, limit: int = 20,
+    ) -> dict[str, Any]:
+        return services.graph.symbol_search(scope_type, scope_id, query, module_id, min(limit, 100))
+
+    @app.get("/api/graph/core-functions")
+    def graph_core_functions(repository_id: str, module_id: str | None = None, limit: int = 80) -> dict[str, Any]:
+        services.registry.get_repository(repository_id)
+        return services.graph.core_functions(repository_id, module_id, min(limit, 200))
+
+    @app.post("/api/graph/impact")
+    def graph_impact(body: GraphImpactRequest) -> dict[str, Any]:
+        return services.graph.impact(
+            body.scope_type, body.scope_id, body.anchor_id, body.change_kind, body.depth,
+            body.include_candidates, body.limit,
+        )
+
+    @app.post("/api/graph/query")
+    def graph_query(body: GraphQueryRequest) -> dict[str, Any]:
+        if body.query:
+            return services.graph.symbol_search(body.scope_type, body.scope_id, body.query, body.module_id, min(body.limit, 100))
+        return services.graph.graph(
+            body.scope_type, body.scope_id, body.level, body.kinds, body.certainty, body.limit,
+            view=body.view, layers=body.layers, statuses=body.statuses, community_id=body.community_id,
+            min_degree=body.min_degree,
         )
 
     @app.get("/api/graph/path")

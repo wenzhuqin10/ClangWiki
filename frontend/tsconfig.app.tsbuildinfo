@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/graphcanvas.tsx","./src/graphworkbench.tsx","./src/api.ts","./src/main.tsx","./src/vite-env.d.ts"],"version":"5.9.3"}
+{"root":["./src/app.tsx","./src/graph3d.tsx","./src/graphcanvas.tsx","./src/graphworkbench.tsx","./src/api.ts","./src/main.tsx","./src/vite-env.d.ts"],"version":"5.9.3"}
