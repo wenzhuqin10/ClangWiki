@@ -5,6 +5,7 @@ import io
 import json
 import re
 import shutil
+import subprocess
 import time
 import zipfile
 from dataclasses import dataclass
@@ -176,15 +177,7 @@ def create_app(data_root: Path, web_root: Path | None = None) -> FastAPI:
             "SELECT value_json FROM settings WHERE key = ?", ("default_model",)
         )
         default_model = json_loads(default_model_row["value_json"], "") if default_model_row else ""
-        model_options = [default_model] if default_model else []
-        model_options.extend(
-            item.get("config", {}).get("model", "") for item in repositories
-        )
-        model_options.extend([
-            "zai/glm-5.1",
-            "deepseek/deepseek-v4-flash",
-            "opencode/deepseek-v4-flash-free",
-        ])
+        model_options = _opencode_model_options(repositories, default_model)
         return {
             "version": __version__, "data_root": str(services.database.data_root),
             "repositories": len(repositories), "collections": len(collections),
@@ -726,6 +719,57 @@ def _vector_runtime_status() -> dict[str, Any]:
         except ImportError:
             values[package] = {"available": False}
     return values
+
+
+_OPENCODE_MODEL_CACHE: tuple[float, list[str]] | None = None
+
+
+def _opencode_model_options(repositories: list[dict[str, Any]], default_model: str) -> list[str]:
+    """Return the models actually exposed by the local OpenCode CLI.
+
+    The UI used to carry a hard-coded free DeepSeek identifier which can
+    disappear from OpenCode's provider catalog.  Discovering the list locally
+    keeps the selector aligned with the installed CLI while retaining any
+    currently configured custom identifier so an existing repository remains
+    editable even when that provider is temporarily unavailable.
+    """
+    global _OPENCODE_MODEL_CACHE
+    now = time.monotonic()
+    discovered: list[str] = []
+    if _OPENCODE_MODEL_CACHE and now - _OPENCODE_MODEL_CACHE[0] < 30:
+        discovered = list(_OPENCODE_MODEL_CACHE[1])
+    else:
+        executable = "opencode"
+        for repository in repositories:
+            candidate = str(repository.get("config", {}).get("opencode_executable") or "").strip()
+            if candidate:
+                executable = candidate
+                break
+        resolved = shutil.which(executable) or executable
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+        try:
+            result = subprocess.run(
+                [resolved, "models"], capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=8,
+                creationflags=flags, check=False,
+            )
+            if result.returncode == 0:
+                discovered = [
+                    re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", line).strip()
+                    for line in result.stdout.splitlines()
+                    if re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", line).strip()
+                ]
+                discovered = list(dict.fromkeys(discovered))
+        except (OSError, subprocess.SubprocessError):
+            discovered = []
+        _OPENCODE_MODEL_CACHE = (now, discovered)
+
+    configured = [
+        str(repository.get("config", {}).get("model") or "").strip()
+        for repository in repositories
+    ]
+    values = list(dict.fromkeys([str(default_model or "").strip(), *discovered, *configured]))
+    return [item for item in values if item]
 
 
 def _reject_secrets(value: Any, path: str = "config") -> None:
