@@ -447,3 +447,21 @@ def test_failed_document_run_exposes_safe_resume_checkpoint(tmp_path: Path) -> N
         services.generation._validate_resume_source(
             repository["id"], run_id, repository_file_hashes(repository_root), config_hash,
         )
+
+    # A later successful continuation supersedes the old checkpoint.  The
+    # history remains visible, but neither the API nor the UI should offer the
+    # stale run as another “continue” action.
+    newer_run_id = "run-resumed"
+    newer_root = services.registry.run_root(repository["id"], newer_run_id)
+    newer_root.mkdir(parents=True, exist_ok=True)
+    services.database.execute(
+        "INSERT INTO runs(id,repository_id,status,config_hash,schema_version,artifact_path,manifest_json,created_at) "
+        "VALUES(?,?,?,?,?,?,?,?)",
+        (
+            newer_run_id, repository["id"], "completed", config_hash, DOCUMENT_SCHEMA_VERSION,
+            str(newer_root), json.dumps({"resume_from_run_id": run_id}), time.time() + 1,
+        ),
+    )
+    runs = services.generation.list_runs(repository["id"])
+    assert runs[0]["id"] == newer_run_id
+    assert next(item for item in runs if item["id"] == run_id)["resumable"] is False

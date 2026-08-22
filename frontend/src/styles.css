@@ -438,6 +438,7 @@ code, .mono { font-family: var(--mono); }
 .job-line small, .job-line code { color: var(--faint); font-size: 8px; }
 .job-line > span:nth-child(4) { display: flex; align-items: center; gap: 7px; }
 .job-actions { display: flex; gap: 4px; }
+.job-resumed { color: var(--success); font-size: 9px; white-space: nowrap; }
 .job-line em { color: var(--muted); font: 8px var(--mono); font-style: normal; }
 .progress { display: block; width: 105px; height: 5px; overflow: hidden; border-radius: 99px; background: var(--surface-3); }
 .progress b { display: block; height: 100%; border-radius: 99px; background: var(--accent); }

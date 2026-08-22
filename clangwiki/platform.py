@@ -257,6 +257,12 @@ class PlatformGenerationService:
         run = self.get_run(run_id)
         if run["repository_id"] != repository_id:
             raise ClangWikiError("断点运行不属于当前代码仓。")
+        latest = self.db.one(
+            "SELECT id FROM runs WHERE repository_id=? ORDER BY created_at DESC LIMIT 1",
+            (repository_id,),
+        )
+        if latest and latest["id"] != run_id:
+            raise ClangWikiError("该断点已被更新的运行快照取代，请从当前失败运行继续或重新生成完整 Wiki。")
         if run["status"] not in {"failed", "cancelled", "interrupted"}:
             raise ClangWikiError("只能继续失败、取消或中断的 Wiki 运行。")
         if run.get("schema_version") != DOCUMENT_SCHEMA_VERSION:
@@ -281,9 +287,18 @@ class PlatformGenerationService:
 
     def list_runs(self, repository_id: str) -> list[dict[str, Any]]:
         self.registry.get_repository(repository_id)
-        return [self._public_run(row) for row in self.db.all(
+        runs = [self._public_run(row) for row in self.db.all(
             "SELECT * FROM runs WHERE repository_id=? ORDER BY created_at DESC", (repository_id,)
         )]
+        # A successful continuation creates a fresh immutable run.  Older
+        # failed checkpoints remain useful history, but must not keep exposing
+        # a second “继续” action after the newer run has completed.
+        if runs:
+            latest_id = runs[0]["id"]
+            for run in runs[1:]:
+                if run.get("id") != latest_id:
+                    run["resumable"] = False
+        return runs
 
     def get_run(self, run_id: str) -> dict[str, Any]:
         row = self.db.one("SELECT * FROM runs WHERE id=?", (run_id,))

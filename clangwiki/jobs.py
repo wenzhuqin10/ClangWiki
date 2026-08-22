@@ -148,10 +148,42 @@ class PersistentJobManager:
         row = self.db.one("SELECT * FROM jobs WHERE id=?", (job_id,))
         if not row:
             raise KeyError("任务不存在")
-        return self._public(row)
+        return self._decorate_resume_state(self._public(row))
 
     def list(self, limit: int = 200) -> list[dict[str, Any]]:
-        return [self._public(row) for row in self.db.all("SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,))]
+        return [self._decorate_resume_state(self._public(row)) for row in self.db.all("SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,))]
+
+    def _decorate_resume_state(self, job: dict[str, Any]) -> dict[str, Any]:
+        """Link a failed generation job to a later continuation job, if any.
+
+        A continuation is intentionally a new persistent job and run.  The
+        original failed job therefore remains in history with its old status;
+        exposing that stale job as resumable makes the UI show a second
+        checkpoint button after the continuation has already finished.
+        """
+        if job.get("kind") != "generate" or not job.get("scope_id"):
+            return job
+        runs = self.db.all(
+            "SELECT id,status,manifest_json FROM runs WHERE repository_id=? ORDER BY created_at DESC",
+            (job["scope_id"],),
+        )
+        source_run_id = None
+        for row in runs:
+            manifest = json_loads(row.get("manifest_json"), {})
+            if str(manifest.get("job_id") or "") == str(job.get("id")):
+                source_run_id = str(row["id"])
+                break
+        if not source_run_id:
+            return job
+        for row in runs:
+            manifest = json_loads(row.get("manifest_json"), {})
+            if str(manifest.get("resume_from_run_id") or "") != source_run_id:
+                continue
+            job["resumed_by_job_id"] = manifest.get("job_id")
+            job["resumed_run_id"] = row["id"]
+            job["resumed_run_status"] = row.get("status")
+            break
+        return job
 
     def events(self, job_id: str, after: int = 0) -> list[dict[str, Any]]:
         self.get(job_id)
