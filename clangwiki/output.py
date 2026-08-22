@@ -49,6 +49,36 @@ def validate_markdown(
         _validate_summary_synthesis(value, child_documents)
 
 
+def select_final_complete_document(markdown: str, document_type: str) -> str:
+    """Select the last complete document from concatenated OpenCode output.
+
+    Some OpenCode model/provider combinations emit several progressively more
+    complete assistant responses on stdout.  The CLI concatenates those
+    responses, which otherwise looks like one Markdown document with repeated
+    H1/H2 sections.  Preserve the raw stdout log, but pass only the last
+    structurally complete document to the normal validator and writer.
+
+    If no complete candidate is present, return the original value so the
+    regular contract validator can report the full, actionable failure.
+    """
+    expected = required_section_headings(document_type)
+    if not expected:
+        return markdown
+
+    lines = markdown.strip().splitlines()
+    starts = _heading_positions(lines, "# ")
+    if len(starts) <= 1:
+        return markdown
+
+    boundaries = [*starts, len(lines)]
+    complete: list[str] = []
+    for index, start in enumerate(starts):
+        candidate = "\n".join(lines[start:boundaries[index + 1]]).strip()
+        if _has_complete_document_contract(candidate, expected):
+            complete.append(candidate)
+    return complete[-1] if complete else markdown
+
+
 def ensure_navigation_card(
     markdown: str,
     task: DocumentTask,
@@ -158,6 +188,37 @@ def _validate_document_contract(markdown: str, document_type: str) -> None:
             raise MarkdownValidationError(
                 f"章节“{heading}”为空。证据不足时也必须说明无法确认的内容和所需材料。"
             )
+
+
+def _has_complete_document_contract(markdown: str, expected: tuple[str, ...]) -> bool:
+    lines = markdown.splitlines()
+    positions = _heading_positions(lines, "## ")
+    actual = tuple(lines[index][3:].strip() for index in positions)
+    if actual != expected:
+        return False
+    for index, position in enumerate(positions):
+        end = positions[index + 1] if index + 1 < len(positions) else len(lines)
+        if not "\n".join(lines[position + 1:end]).strip():
+            return False
+    return True
+
+
+def _heading_positions(lines: list[str], prefix: str) -> list[int]:
+    """Return exact Markdown heading positions while ignoring fenced code."""
+    positions: list[int] = []
+    fence: str | None = None
+    for index, line in enumerate(lines):
+        stripped = line.lstrip()
+        marker = "```" if stripped.startswith("```") else "~~~" if stripped.startswith("~~~") else None
+        if marker is not None:
+            if fence is None:
+                fence = marker
+            elif fence == marker:
+                fence = None
+            continue
+        if fence is None and line.startswith(prefix):
+            positions.append(index)
+    return positions
 
 
 def _validate_summary_synthesis(markdown: str, child_documents: dict[str, str]) -> None:

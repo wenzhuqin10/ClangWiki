@@ -5,7 +5,12 @@ import pytest
 from clangwiki.context import build_context
 from clangwiki.document_schema import required_section_headings
 from clangwiki.models import AnalysisBundle, DocumentTask, Module
-from clangwiki.output import ensure_child_document_navigation, ensure_navigation_card, validate_markdown
+from clangwiki.output import (
+    ensure_child_document_navigation,
+    ensure_navigation_card,
+    select_final_complete_document,
+    validate_markdown,
+)
 
 
 def test_context_marks_uncertain_calls(tmp_path: Path):
@@ -123,6 +128,34 @@ def test_markdown_validation_enforces_document_contract():
 
     with pytest.raises(Exception):
         validate_markdown("# 示例模块\n\n## 功能目标与责任边界\n内容足够长但章节不完整。" * 4, "leaf-engineering")
+
+
+def test_selects_last_complete_document_from_progressive_opencode_output():
+    sections = required_section_headings("leaf-engineering")
+
+    def document(label: str, count: int) -> str:
+        lines = [f"# {label}"]
+        for heading in sections[:count]:
+            lines.extend(["", f"## {heading}", f"{label} 的 {heading} 内容。"])
+        return "\n".join(lines)
+
+    raw = "\n".join([
+        document("第一次未完成", 3),
+        document("第二次完整", len(sections)),
+        document("最后一次完整", len(sections)),
+    ])
+    selected = select_final_complete_document(raw, "leaf-engineering")
+
+    assert selected.startswith("# 最后一次完整")
+    assert "# 第一次未完成" not in selected
+    assert selected.count("\n## ") == len(sections)
+    validate_markdown(selected, "leaf-engineering")
+
+
+def test_keeps_original_output_when_no_complete_document_exists():
+    raw = "# 第一次\n\n## 功能目标与责任边界\n内容\n# 第二次\n\n## 功能目标与责任边界\n内容"
+
+    assert select_final_complete_document(raw, "leaf-engineering") == raw
 
 
 def test_summary_navigation_is_added_without_new_second_level_chapter():

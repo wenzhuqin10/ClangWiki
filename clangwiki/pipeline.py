@@ -14,7 +14,13 @@ from .build import (
     validate_repository,
 )
 from .context import build_context
-from .errors import CMakeError, ClangWikiError, CompilationDatabaseError, GenerationCancelled
+from .errors import (
+    CMakeError,
+    ClangWikiError,
+    CompilationDatabaseError,
+    GenerationCancelled,
+    MarkdownValidationError,
+)
 from .io import read_json, write_json, write_text
 from .knowledge import build_knowledge
 from .models import AnalysisBundle, RunConfig, normalize_module_generation_concurrency
@@ -23,6 +29,7 @@ from .output import (
     SYNTHESIS_DOCUMENT_TYPES,
     ensure_child_document_navigation,
     ensure_navigation_card,
+    select_final_complete_document,
     validate_markdown,
     write_document,
 )
@@ -162,22 +169,61 @@ class GenerationPipeline:
             stderr_log = workspace / "logs" / "opencode" / f"{task.task_id}.stderr.txt"
             try:
                 self._emit("opencode", f"正在调用 OpenCode 生成：{task.title}", progress(current))
-                markdown = runner.generate(repo, context_file, stdout_log, stderr_log)
+                raw_markdown = runner.generate(repo, context_file, stdout_log, stderr_log)
                 self._check_cancelled()
                 child_documents = {
                     relative_path: (self.config.output / relative_path).read_text(encoding="utf-8", errors="replace")
                     for relative_path in task.child_document_paths
                     if (self.config.output / relative_path).is_file()
                 }
-                markdown = ensure_navigation_card(markdown, task, modules)
-                if task.document_type in SYNTHESIS_DOCUMENT_TYPES:
-                    markdown = ensure_child_document_navigation(
-                        markdown,
-                        task.output_relative_path,
-                        tuple(child_documents),
+
+                def prepare_and_validate(value: str, *, repaired: bool = False) -> str:
+                    markdown = select_final_complete_document(value, task.document_type)
+                    if markdown.strip() != value.strip():
+                        label = "修复输出" if repaired else "OpenCode 返回多段结果"
+                        self._log(log, f"[NORMALIZE] selected final complete Markdown: {task.task_id}")
+                        self._emit(
+                            "validate",
+                            f"{label}，已选取最后一份完整文档：{task.title}",
+                            progress(current),
+                        )
+                    markdown = ensure_navigation_card(markdown, task, modules)
+                    if task.document_type in SYNTHESIS_DOCUMENT_TYPES:
+                        markdown = ensure_child_document_navigation(
+                            markdown,
+                            task.output_relative_path,
+                            tuple(child_documents),
+                        )
+                    self._emit("validate", f"正在校验 Markdown：{task.title}", progress(current))
+                    validate_markdown(markdown, task.document_type, child_documents)
+                    return markdown
+
+                try:
+                    markdown = prepare_and_validate(raw_markdown)
+                except MarkdownValidationError as first_error:
+                    self._check_cancelled()
+                    repair_stdout = workspace / "logs" / "opencode" / f"{task.task_id}.repair.stdout.txt"
+                    repair_stderr = workspace / "logs" / "opencode" / f"{task.task_id}.repair.stderr.txt"
+                    reason = " ".join(str(first_error).split())[:1200]
+                    repair_prompt = (
+                        "重新读取标准输入中的 ClangWiki 任务上下文。上一次文档输出未通过校验，"
+                        f"原因是：{reason}。请重新生成一份完整、精简的替代文档。"
+                        "必须只有一个一级标题，并严格按上下文要求输出全部二级章节，"
+                        "不得重复、改名、遗漏或增加二级章节。每节使用简短段落、表格或要点，"
+                        "全文控制在 12000 个中文字符以内，确保最后一个章节完整结束。"
+                        "仅输出最终 Markdown 正文，不解释修复过程。"
                     )
-                self._emit("validate", f"正在校验 Markdown：{task.title}", progress(current))
-                validate_markdown(markdown, task.document_type, child_documents)
+                    self._log(log, f"[REPAIR] retry invalid Markdown once: {task.task_id}; reason={reason}")
+                    self._emit(
+                        "repair",
+                        f"首次输出不完整，正在自动精简并补全：{task.title}",
+                        progress(current),
+                    )
+                    repaired_raw = runner.run_prompt(
+                        repo, context_file, repair_stdout, repair_stderr, repair_prompt,
+                    )
+                    self._check_cancelled()
+                    markdown = prepare_and_validate(repaired_raw, repaired=True)
                 destination = write_document(self.config.output, task.output_relative_path, markdown, self.config.overwrite)
             except ClangWikiError as exc:
                 self._log(log, f"[FAILED] {task.task_id}; logs: {stdout_log}, {stderr_log}")

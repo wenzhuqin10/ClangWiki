@@ -5,6 +5,7 @@ import threading
 import time
 from pathlib import Path
 
+from clangwiki.document_schema import required_section_headings
 from clangwiki.models import AnalysisBundle, DocumentTask, Module, RunConfig
 from clangwiki.pipeline import GenerationPipeline
 
@@ -34,6 +35,27 @@ class _ImmediateRunner:
     def generate(self, _repository: Path, context_file: Path, _stdout: Path, _stderr: Path) -> str:
         self.calls.append(context_file.stem)
         return "# Generated\n\nBody\n"
+
+
+class _RepairingRunner:
+    def __init__(self) -> None:
+        self.repair_calls = 0
+
+    def generate(self, _repository: Path, _context: Path, _stdout: Path, _stderr: Path) -> str:
+        return (
+            "# First\n\n## 功能目标与责任边界\n内容\n"
+            "# Second\n\n## 功能目标与责任边界\n内容\n## 领域原理与实现约束\n内容"
+        )
+
+    def run_prompt(
+        self, _repository: Path, _context: Path, _stdout: Path, _stderr: Path, prompt: str,
+    ) -> str:
+        self.repair_calls += 1
+        assert "完整、精简的替代文档" in prompt
+        lines = ["# Repaired"]
+        for heading in required_section_headings("leaf-engineering"):
+            lines.extend(["", f"## {heading}", "当前证据无法确定；需要补充运行证据。"])
+        return "\n".join(lines)
 
 
 def test_leaf_generation_runs_in_parallel_before_aggregate(tmp_path: Path, monkeypatch) -> None:
@@ -146,3 +168,36 @@ def test_resume_reuses_checkpointed_documents_and_continues_remaining_tasks(tmp_
     assert any(event["stage"] == "resume" for event in events)
     checkpoint = json.loads((workspace / "checkpoint.json").read_text(encoding="utf-8"))
     assert checkpoint["completed_task_ids"] == ["leaf-a", "summary-parent"]
+
+
+def test_invalid_markdown_is_repaired_once_before_writing(tmp_path: Path, monkeypatch) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "a.c").write_text("int a(void) { return 0; }\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    config = RunConfig(
+        repo=repo, workspace=workspace, output=workspace / "output", build_dir=workspace / "build",
+        model="test/model", overwrite=True,
+    )
+    pipeline = GenerationPipeline(config)
+    runner = _RepairingRunner()
+    task = DocumentTask(
+        "leaf-a", "leaf-engineering", "A", "Modules/a.md", ("a",), hierarchy_role="leaf",
+    )
+    modules = {"a": Module("a", "A", ["a.c"], [], source_path="a", is_leaf=True)}
+    events: list[dict[str, object]] = []
+    pipeline.progress_sink = events.append
+
+    def fake_context(_task, _repo, _modules, _analysis, destination, *_args):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text("# Context\n", encoding="utf-8")
+
+    monkeypatch.setattr("clangwiki.pipeline.build_context", fake_context)
+    generated = pipeline._generate_documents(
+        [task], runner, repo, workspace, modules, AnalysisBundle("full"), workspace / "pipeline.log",
+    )
+
+    assert runner.repair_calls == 1
+    assert generated == [workspace / "output" / "Modules" / "a.md"]
+    assert "# Repaired" in generated[0].read_text(encoding="utf-8")
+    assert any(event["stage"] == "repair" for event in events)
