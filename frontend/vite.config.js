@@ -16,9 +16,13 @@ export default defineConfig({
                 manualChunks: function (id) {
                     if (!id.includes("node_modules"))
                         return undefined;
-                    if (id.includes("cytoscape") || id.includes("layout-base") || id.includes("cose-base"))
+                    var normalizedId = id.replace(/\\/g, "/");
+                    if (normalizedId.includes("cytoscape") || normalizedId.includes("layout-base") || normalizedId.includes("cose-base"))
                         return "graph-vendor";
-                    if (id.includes("react") || id.includes("scheduler"))
+                    // Match the React packages as package path segments. A broad
+                    // `includes("react")` also captures `@react-three/*`, which would
+                    // eagerly execute the optional 3D renderer during app startup.
+                    if (/(^|\/)(react|react-dom|scheduler)(\/|$)/.test(normalizedId))
                         return "react-vendor";
                     if (id.includes("marked") || id.includes("dompurify"))
                         return "content-vendor";

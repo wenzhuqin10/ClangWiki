@@ -148,6 +148,28 @@ def test_graph_v2_keeps_candidates_out_of_confirmed_paths(tmp_path: Path, monkey
     surprise_graph = graph.graph("repository", repository["id"], "symbol", limit=200, view="surprises")
     assert surprise_graph["focus"] == "surprising_connections"
     assert all(edge["kind"] == "SURPRISING_CONNECTION" for edge in surprise_graph["edges"])
+    universe_graph = graph.graph("repository", repository["id"], "symbol", limit=20, view="universe")
+    assert universe_graph["focus"] == "knowledge_universe"
+    assert len(universe_graph["nodes"]) <= 20
+    assert len(universe_graph["edges"]) <= 80
+    assert all(edge["status"] == "confirmed" for edge in universe_graph["edges"])
+    assert all("projection_role" in node for node in universe_graph["nodes"])
+    universe_with_candidates = graph.graph(
+        "repository", repository["id"], "symbol", limit=20, view="universe",
+        statuses=["confirmed", "candidate"],
+    )
+    assert any(edge["kind"] == "POSSIBLE_CALL" and edge["status"] == "candidate" for edge in universe_with_candidates["edges"])
+    community_ids = {item["id"] for item in graph.communities(repository["id"])}
+    if community_ids:
+        assert community_ids.intersection({node["id"] for node in universe_graph["nodes"]})
+    for category, role in (("hub", "hub"), ("bridge", "bridge")):
+        expected = {item["id"] for item in graph.ranked_nodes(repository["id"], category, limit=20)}
+        if expected:
+            actual = {
+                node["id"] for node in universe_graph["nodes"]
+                if node.get("projection_role") in {role, "hub_bridge"}
+            }
+            assert expected.intersection(actual)
     assert graph.insights(repository["id"], "surprising_connection")
     symbol_results = graph.symbol_search("repository", repository["id"], "pdsch_encode", limit=5)
     assert symbol_results["total"] >= 1
@@ -159,6 +181,25 @@ def test_graph_v2_keeps_candidates_out_of_confirmed_paths(tmp_path: Path, monkey
     assert impact["anchor"]["id"] == call["source"]
     assert call["target"] in impact["impact_tiers"]["must_review"]
     assert call["origin"] == "compiler" and call["evidence_count"] == 1
+    symbol_neighbors = graph.neighbors(
+        call["source"], scope_type="repository", scope_id=repository["id"],
+        level="symbol", depth=2, limit=20,
+    )
+    assert symbol_neighbors["center"]["id"] == call["source"]
+    assert symbol_neighbors["visible_nodes"] == len(symbol_neighbors["nodes"])
+    assert symbol_neighbors["visible_edges"] == len(symbol_neighbors["edges"])
+    assert symbol_neighbors["confirmed_edges"] == len(symbol_neighbors["edges"])
+    assert symbol_neighbors["candidate_edges"] == 0
+    assert symbol_neighbors["by_relation"] == symbol_neighbors["relation_counts"]
+    assert all("hop" in node and "parent_id" in node for node in symbol_neighbors["nodes"])
+    assert next(node for node in symbol_neighbors["nodes"] if node["id"] == call["target"])["hop"] == 1
+    assert next(node for node in symbol_neighbors["nodes"] if node["id"] == call["target"])["parent_id"] == call["source"]
+    candidate_neighbors = graph.neighbors(
+        call["source"], scope_type="repository", scope_id=repository["id"],
+        level="symbol", depth=1, limit=20, include_candidates=True,
+    )
+    assert candidate_neighbors["candidate_edges"] >= 1
+    assert candidate_neighbors["by_direction"]["outgoing"] >= 1
     detail = graph.node_detail(call["source"])
     assert any(edge["evidence"] for edge in detail["edges"] if edge["kind"] == "CALLS")
     edge_detail = graph.edge_detail(call["id"])

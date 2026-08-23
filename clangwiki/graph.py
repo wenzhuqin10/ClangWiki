@@ -660,6 +660,12 @@ class GraphService:
         )
         if view == "community":
             return self._community_graph(repository_ids, node_map, edges, limit)
+        if view == "universe":
+            result = self._universe_graph(repository_ids, node_map, edges, limit)
+            result["diagnostics"] = self.diagnostics(repository_ids[0]) if len(repository_ids) == 1 else {
+                "repositories": {repository_id: self.diagnostics(repository_id) for repository_id in repository_ids}
+            }
+            return result
         if view == "coremap":
             result = self._coremap_graph(repository_ids, node_map, edges, limit)
             result["diagnostics"] = self.diagnostics(repository_ids[0]) if len(repository_ids) == 1 else {}
@@ -727,7 +733,10 @@ class GraphService:
             if center_row.get("repository_id") not in allowed_repositories and center_row.get("collection_id") != scope_id:
                 raise KeyError("图谱节点不在当前范围内")
             if not allowed_repositories:
-                return {"center": self._public_node(center_row), "nodes": [self._public_node(center_row)], "edges": [], "depth": 0, "relation_counts": {}, "truncated": False}
+                return _neighbors_payload(
+                    node_id, self._public_node(center_row), [self._public_node(center_row)], [],
+                    depth=0, truncated=False,
+                )
             repository_placeholders = ",".join("?" for _ in allowed_repositories)
             scope_condition = f" AND (repository_id IN ({repository_placeholders})"
             scope_parameters = tuple(allowed_repositories)
@@ -740,8 +749,10 @@ class GraphService:
         requested = {item.upper() for item in (kinds or [])}
         seen = {node_id}
         frontier = {node_id}
+        hops = {node_id: 0}
+        parents: dict[str, str | None] = {node_id: None}
         edge_rows: dict[str, dict[str, Any]] = {}
-        for _ in range(depth):
+        for hop in range(1, depth + 1):
             if not frontier or len(seen) >= limit:
                 break
             placeholders = ",".join("?" for _ in frontier)
@@ -762,28 +773,38 @@ class GraphService:
                     tuple(frontier) + tuple(frontier) + scope_parameters + (limit * 4,),
                 )
             next_frontier: set[str] = set()
-            for row in rows:
+            for row in sorted(rows, key=lambda item: str(item.get("id") or "")):
                 if requested and row["kind"] not in requested:
                     continue
                 edge_rows[row["id"]] = row
-                for key in ("source_id", "target_id"):
-                    if row[key] not in seen:
-                        next_frontier.add(row[key])
+                if direction == "outgoing":
+                    endpoints = (row["target_id"],)
+                elif direction == "incoming":
+                    endpoints = (row["source_id"],)
+                else:
+                    endpoints = (row["source_id"], row["target_id"])
+                for endpoint in endpoints:
+                    if endpoint not in seen and endpoint not in next_frontier and len(seen) + len(next_frontier) < limit:
+                        next_frontier.add(endpoint)
+                        hops[endpoint] = hop
+                        parent_candidates = [item for item in sorted(frontier) if item in (row["source_id"], row["target_id"])]
+                        parents[endpoint] = parent_candidates[0] if parent_candidates else None
             seen.update(next_frontier)
             frontier = next_frontier
         placeholders = ",".join("?" for _ in seen)
         nodes = self.db.all(f"SELECT * FROM knowledge_nodes WHERE id IN ({placeholders})", tuple(seen)) if seen else []
-        public_nodes = [self._public_node(node) for node in nodes]
+        public_nodes = []
+        for node in nodes:
+            public = self._public_node(node)
+            public["hop"] = hops.get(node["id"], 0)
+            public["parent_id"] = parents.get(node["id"])
+            public_nodes.append(public)
         public_edges = [self._public_edge(edge) for edge in edge_rows.values()]
         public_center = self._public_node(center_row)
-        return {
-            "center": public_center,
-            "nodes": public_nodes,
-            "edges": public_edges,
-            "depth": depth,
-            "relation_counts": _relation_counts(public_edges),
-            "truncated": len(seen) >= limit,
-        }
+        return _neighbors_payload(
+            node_id, public_center, public_nodes, public_edges,
+            depth=depth, truncated=len(seen) >= limit,
+        )
 
     def shortest_path(
         self, source_id: str, target_id: str, max_depth: int = 8, *, directed: bool = True,
@@ -1232,6 +1253,150 @@ class GraphService:
             "diagnostics": self.diagnostics(repository_ids[0]) if len(repository_ids) == 1 else {},
         }
 
+    def _universe_graph(
+        self, repository_ids: list[str], node_map: dict[str, dict[str, Any]],
+        edges: list[dict[str, Any]], limit: int,
+    ) -> dict[str, Any]:
+        """Return a bounded, deterministic knowledge-universe projection.
+
+        This is intentionally a presentation projection, not a second graph
+        authority.  Community nodes come from persisted analytics and real
+        nodes/edges come from the same filtered query as the ordinary graph
+        view.  In particular, candidate edges are only present when callers
+        explicitly request them through ``statuses``.
+        """
+        cap = max(1, min(int(limit or 1), 500))
+        edge_cap = min(3500, max(cap, cap * 4))
+        repository_placeholders = ",".join("?" for _ in repository_ids)
+        community_rows = self.db.all(
+            "SELECT * FROM graph_communities WHERE repository_id IN ("
+            + repository_placeholders
+            + ") ORDER BY member_count DESC,name,id",
+            tuple(repository_ids),
+        )
+        visible_community_ids = {
+            str(node.get("community_id")) for node in node_map.values() if node.get("community_id")
+        }
+        if visible_community_ids:
+            community_rows = [row for row in community_rows if row["id"] in visible_community_ids]
+
+        # Reserve enough room for meaningful real nodes while keeping the
+        # aggregate community layer visible in a large repository.
+        community_total = len(community_rows)
+        community_cap = min(len(community_rows), max(1, min(100, cap // 3)))
+        community_rows = community_rows[:community_cap]
+        community_map = {row["id"]: row for row in community_rows}
+        public_nodes: list[dict[str, Any]] = []
+        for row in community_rows:
+            public_nodes.append({
+                "id": row["id"], "repository_id": row["repository_id"], "kind": "community",
+                "layer": "code", "subtype": "community", "name": row["name"],
+                "display_name": row["name"], "community_id": row["id"],
+                "color": row["color"], "member_count": row["member_count"],
+                "cohesion": row["cohesion"], "metadata": json_loads(row.get("metadata_json"), {}),
+                "metrics": {"degree": 0, "is_hub": False, "is_bridge": False, "is_orphan": False},
+                "projection_role": "community", "projection_group": row["repository_id"],
+            })
+
+        real_nodes = [node for node in node_map.values() if node.get("kind") != "community"]
+
+        def node_rank(node: dict[str, Any]) -> tuple[Any, ...]:
+            metrics = node.get("metrics", {})
+            hub = bool(metrics.get("is_hub"))
+            bridge = bool(metrics.get("is_bridge"))
+            kind = str(node.get("kind") or "")
+            # Preserve core/bridge symbols first, then structural anchors, and
+            # finally connected members.  All tie-breakers are stable.
+            role_rank = 0 if hub and bridge else 1 if hub else 2 if bridge else 3
+            structural_rank = 0 if kind in {"repository", "module", "file", "build_target"} else 1
+            return (
+                role_rank, structural_rank,
+                -float(metrics.get("god_score") or 0),
+                -float(metrics.get("degree") or 0),
+                str(node.get("id") or ""),
+            )
+
+        real_nodes.sort(key=node_rank)
+        real_cap = max(0, cap - len(public_nodes))
+        selected_real = real_nodes[:real_cap]
+        selected_ids = {node["id"] for node in selected_real}
+        for node in selected_real:
+            metrics = node.get("metrics", {})
+            if metrics.get("is_hub") and metrics.get("is_bridge"):
+                role = "hub_bridge"
+            elif metrics.get("is_hub"):
+                role = "hub"
+            elif metrics.get("is_bridge"):
+                role = "bridge"
+            else:
+                role = "member"
+            node["projection_role"] = role
+            node["projection_group"] = node.get("community_id") or node.get("repository_id")
+            public_nodes.append(node)
+
+        # Aggregate cross-community facts onto virtual community nodes.  Keep
+        # the relation kind/status so explicitly requested candidate edges do
+        # not become indistinguishable from compiler-confirmed relationships.
+        aggregate_edges: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+        public_edges: list[dict[str, Any]] = []
+        for edge in edges:
+            source_id, target_id = edge.get("source_id"), edge.get("target_id")
+            source_node, target_node = node_map.get(source_id), node_map.get(target_id)
+            if not source_node or not target_node:
+                continue
+            source_community = source_node.get("community_id")
+            target_community = target_node.get("community_id")
+            if (
+                source_community in community_map and target_community in community_map
+                and source_community != target_community
+            ):
+                status = edge.get("status") or "confirmed"
+                key = (source_community, target_community, str(edge.get("kind") or ""), status)
+                item = aggregate_edges.get(key)
+                if item is None:
+                    item = {
+                        "id": f"universe-edge:{_digest('|'.join(key))}",
+                        "source": source_community, "target": target_community,
+                        "kind": edge["kind"],
+                        "relation_label": GRAPH_RELATION_LABELS.get(edge["kind"], edge["kind"]),
+                        "certainty": edge.get("certainty"), "confidence": float(edge.get("confidence") or 0),
+                        "status": status, "origin": edge.get("origin") or "source",
+                        "weight": float(edge.get("weight") or 1.0),
+                        "evidence_count": int(edge.get("evidence_count") or 0),
+                        "confirmed": status == "confirmed", "count": 0,
+                        "metadata": {"aggregated": True},
+                    }
+                    aggregate_edges[key] = item
+                item["count"] += 1
+                item["weight"] += float(edge.get("weight") or 1.0)
+                item["confidence"] = max(item["confidence"], float(edge.get("confidence") or 0))
+                item["evidence_count"] += int(edge.get("evidence_count") or 0)
+                continue
+            if source_id in selected_ids and target_id in selected_ids:
+                public_edges.append(self._public_edge(edge))
+
+        public_edges.extend(aggregate_edges.values())
+        public_edges.sort(key=lambda edge: (
+            edge.get("status") != "confirmed", str(edge.get("kind") or ""), str(edge.get("id") or "")
+        ))
+        public_nodes.sort(key=lambda node: (str(node.get("projection_role") or ""), str(node.get("id") or "")))
+        total_matching_nodes = community_total + len(real_nodes)
+        hidden_nodes = max(0, total_matching_nodes - min(len(public_nodes), cap))
+        return {
+            "nodes": public_nodes[:cap],
+            "edges": public_edges[:edge_cap],
+            "displayed_nodes": min(len(public_nodes), cap),
+            "total_matching_nodes": total_matching_nodes,
+            "hidden_nodes": hidden_nodes,
+            "displayed_edges": min(len(public_edges), edge_cap),
+            "total_matching_edges": len(public_edges),
+            "hidden_edges": max(0, len(public_edges) - edge_cap),
+            "truncated": hidden_nodes > 0 or len(public_edges) > edge_cap,
+            "relation_counts": _relation_counts(public_edges),
+            "focus": "knowledge_universe",
+            "available": bool(public_nodes or public_edges),
+        }
+
     def _coremap_graph(
         self, repository_ids: list[str], node_map: dict[str, dict[str, Any]],
         edges: list[dict[str, Any]], limit: int,
@@ -1610,12 +1775,14 @@ def _projected_neighbors(
     direction = direction if direction in {"incoming", "outgoing", "both"} else "both"
     seen = {node_id}
     frontier = {node_id}
+    hops = {node_id: 0}
+    parents: dict[str, str | None] = {node_id: None}
     selected_edges: dict[str, dict[str, Any]] = {}
-    for _ in range(depth):
+    for hop in range(1, depth + 1):
         if not frontier or len(seen) >= limit:
             break
         next_frontier: set[str] = set()
-        for edge in edges:
+        for edge in sorted(edges, key=lambda item: str(item.get("id") or "")):
             if direction == "outgoing":
                 touches_frontier = edge["source"] in frontier
                 endpoints = (edge["target"],)
@@ -1629,16 +1796,66 @@ def _projected_neighbors(
                 continue
             selected_edges[edge["id"]] = edge
             for endpoint in endpoints:
-                if endpoint not in seen:
+                if endpoint not in seen and endpoint not in next_frontier and len(seen) + len(next_frontier) < limit:
                     next_frontier.add(endpoint)
+                    hops[endpoint] = hop
+                    parent_candidates = [item for item in sorted(frontier) if item in (edge["source"], edge["target"])]
+                    parents[endpoint] = parent_candidates[0] if parent_candidates else None
         seen.update(next_frontier)
         frontier = next_frontier
     public_edges = list(selected_edges.values())
+    public_nodes = []
+    for item in seen:
+        if item not in nodes:
+            continue
+        node = dict(nodes[item])
+        node["hop"] = hops.get(item, 0)
+        node["parent_id"] = parents.get(item)
+        public_nodes.append(node)
+    return _neighbors_payload(
+        node_id, nodes[node_id], public_nodes, public_edges,
+        depth=depth, truncated=len(seen) >= limit,
+    )
+
+
+def _neighbors_payload(
+    center_id: str,
+    center: dict[str, Any],
+    nodes: list[dict[str, Any]],
+    edges: list[dict[str, Any]],
+    *,
+    depth: int,
+    truncated: bool,
+) -> dict[str, Any]:
+    """Build the stable neighbor response shared by raw and projected graphs."""
+    direct = sum(1 for node in nodes if node.get("hop") == 1)
+    second = sum(1 for node in nodes if node.get("hop") == 2)
+    by_relation = _relation_counts(edges)
+    by_direction: dict[str, int] = defaultdict(int)
+    for edge in edges:
+        source = edge.get("source") or edge.get("source_id")
+        target = edge.get("target") or edge.get("target_id")
+        if source == center_id:
+            by_direction["outgoing"] += 1
+        elif target == center_id:
+            by_direction["incoming"] += 1
+        else:
+            by_direction["internal"] += 1
+    confirmed = sum(1 for edge in edges if (edge.get("status") or "confirmed") == "confirmed")
+    candidates = sum(1 for edge in edges if (edge.get("status") or "confirmed") == "candidate")
     return {
-        "center": nodes[node_id],
-        "nodes": [nodes[item] for item in seen if item in nodes],
-        "edges": public_edges,
+        "center": center,
+        "nodes": nodes,
+        "edges": edges,
         "depth": depth,
-        "relation_counts": _relation_counts(public_edges),
-        "truncated": len(seen) >= limit,
+        "relation_counts": by_relation,
+        "truncated": truncated,
+        "direct_neighbors": direct,
+        "second_hop_neighbors": second,
+        "visible_nodes": len(nodes),
+        "visible_edges": len(edges),
+        "confirmed_edges": confirmed,
+        "candidate_edges": candidates,
+        "by_relation": by_relation,
+        "by_direction": dict(sorted(by_direction.items())),
     }

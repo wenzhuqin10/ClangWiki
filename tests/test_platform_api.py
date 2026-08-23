@@ -45,6 +45,7 @@ def test_local_platform_registers_repositories_without_secrets(tmp_path: Path) -
     static = client.get("/")
     assert static.status_code == 200
     assert "root" in static.text
+    assert static.headers["cache-control"] == "no-store, max-age=0"
 
 
 def test_manual_knowledge_is_searchable_before_first_generation(tmp_path: Path) -> None:

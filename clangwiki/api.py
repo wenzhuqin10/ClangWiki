@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
@@ -181,6 +181,20 @@ def create_app(data_root: Path, web_root: Path | None = None) -> FastAPI:
         description="本机多仓 C/C++ 代码知识、Wiki、图谱与有引用 RAG 服务。",
     )
     app.state.services = services
+
+    @app.middleware("http")
+    async def no_cache_web_shell(request: Request, call_next):
+        """Always revalidate the HTML shell after a frontend rebuild.
+
+        JavaScript and CSS assets are content-hashed, but an old cached
+        ``index.html`` can still point at a removed bundle after an upgrade.
+        Keeping only the shell uncacheable prevents a stale blank page while
+        preserving normal caching for hashed static assets.
+        """
+        response = await call_next(request)
+        if request.url.path in {"", "/"}:
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+        return response
 
     @app.exception_handler(KeyError)
     async def key_error_handler(_, exc: KeyError):

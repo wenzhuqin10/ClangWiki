@@ -16,6 +16,7 @@ type Props = {
   graph: GraphPayload;
   level: Level;
   view?: GraphView;
+  callflowAnchorId?: string | null;
   selectedNodeId?: string | null;
   selectedEdgeId?: string | null;
   showLabels?: boolean;
@@ -66,7 +67,7 @@ function shapeFor(node: any): cytoscape.Css.NodeShape {
 }
 
 export default function GraphCanvas({
-  graph, level, view = "hierarchy", selectedNodeId, selectedEdgeId, showLabels = true,
+  graph, level, view = "hierarchy", callflowAnchorId, selectedNodeId, selectedEdgeId, showLabels = true,
   showEdgeLabels = false, pathNodeIds = [], onSelect, onSelectEdge, onPathPick,
 }: Props) {
   const host = useRef<HTMLDivElement>(null);
@@ -83,13 +84,18 @@ export default function GraphCanvas({
     if (!host.current) return;
     instance.current?.destroy();
     const focusView = view === "coremap" || view === "surprises";
+    const callflowView = view === "callflow" && Boolean(callflowAnchorId);
     const endpointIds = new Set((graph.edges || []).flatMap((edge: any) => [edge.source, edge.target]));
-    const positions = focusPositions(graph.nodes, graph.edges, view);
+    const flow = callflowView ? callflowModel(graph.nodes, graph.edges, callflowAnchorId!) : null;
+    const positions = flow?.positions || focusPositions(graph.nodes, graph.edges, view);
     const elements = [
       ...graph.nodes.map((node) => ({ data: {
-        ...node, label: nodeLabel(node, level), size: node.metrics?.is_hub ? Math.max(56, sizeFor(node, level) * 1.45) : sizeFor(node, level),
-         fill: node.impact_tier === 0 ? "#ff9b3d" : node.impact_tier === 1 ? "#e86d5c" : node.impact_tier === 2 ? "#d59c4a" : node.impact_tier === 3 ? "#6485be" : node.color || nodeColors[String(node.kind)] || "#8b93a4",
-        shape: focusView || view === "community" ? "ellipse" : shapeFor(node), compact: showLabels && (!focusView || Boolean(node.metrics?.is_hub) || endpointIds.has(node.id)) ? "false" : "true",
+        ...node, label: callflowView ? callflowLabel(node) : nodeLabel(node, level), size: node.metrics?.is_hub ? Math.max(56, sizeFor(node, level) * 1.45) : sizeFor(node, level),
+        renderWidth: callflowView ? 188 : node.metrics?.is_hub ? Math.max(56, sizeFor(node, level) * 1.45) : sizeFor(node, level),
+        renderHeight: callflowView ? 58 : node.metrics?.is_hub ? Math.max(56, sizeFor(node, level) * 1.45) : sizeFor(node, level),
+        fill: callflowView ? flowColor(flow?.roles.get(node.id) || "related") : node.impact_tier === 0 ? "#ff9b3d" : node.impact_tier === 1 ? "#e86d5c" : node.impact_tier === 2 ? "#d59c4a" : node.impact_tier === 3 ? "#6485be" : node.color || nodeColors[String(node.kind)] || "#8b93a4",
+        shape: callflowView ? "round-rectangle" : focusView || view === "community" ? "ellipse" : shapeFor(node), compact: showLabels && (!focusView || Boolean(node.metrics?.is_hub) || endpointIds.has(node.id)) ? "false" : "true",
+        flowRole: flow?.roles.get(node.id) || "",
          god: node.metrics?.is_hub || node.impact_tier === 0 ? "true" : "false",
          impactTier: String(node.impact_tier ?? ""),
         focusEndpoint: endpointIds.has(node.id) ? "true" : "false",
@@ -106,14 +112,14 @@ export default function GraphCanvas({
       container: host.current, elements,
       style: [
         { selector: "node", style: {
-          "background-color": "data(fill)", shape: (element) => element.data("shape") as cytoscape.Css.NodeShape, width: "data(size)", height: "data(size)",
-          label: "data(label)", color: "#dce3f1", "font-size": level === "module" ? 11 : 9,
+          "background-color": "data(fill)", shape: (element) => element.data("shape") as cytoscape.Css.NodeShape, width: "data(renderWidth)", height: "data(renderHeight)",
+          label: "data(label)", color: "#dce3f1", "font-size": callflowView ? 12 : level === "module" ? 11 : 9,
           "font-family": "Inter, Microsoft YaHei UI, Microsoft YaHei, sans-serif", "font-weight": 500,
-          "min-zoomed-font-size": 8, "text-valign": "bottom", "text-halign": "center", "text-margin-y": 8,
-          "text-wrap": "ellipsis", "text-max-width": view === "community" ? "160px" : level === "module" ? "150px" : "124px",
+          "min-zoomed-font-size": 8, "text-valign": callflowView ? "center" : "bottom", "text-halign": "center", "text-margin-y": callflowView ? 0 : 8,
+          "text-wrap": callflowView ? "wrap" : "ellipsis", "text-max-width": callflowView ? "168px" : view === "community" ? "160px" : level === "module" ? "150px" : "124px",
           "text-background-color": "#11141b", "text-background-opacity": focusView ? 0.76 : 0,
           "text-background-padding": focusView ? "3px" : "0px",
-          "border-width": 1.2, "border-color": "#202733", "overlay-opacity": 0,
+          "border-width": callflowView ? 1.5 : 1.2, "border-color": callflowView ? "#394250" : "#202733", "overlay-opacity": 0,
         } },
         { selector: "node[compact = 'true']", style: { label: "" } },
          { selector: "node[god = 'true']", style: {
@@ -128,6 +134,10 @@ export default function GraphCanvas({
          { selector: "node[impactTier = '1']", style: { "border-color": "#ff7669", "border-width": 3 } },
          { selector: "node[impactTier = '2']", style: { "border-color": "#e3b15d", "border-width": 2.2 } },
          { selector: "node[impactTier = '3']", style: { "border-color": "#83a9e4", "border-width": 2 } },
+        { selector: "node[flowRole = 'anchor']", style: { "background-color": "#4a2b1b", "border-color": "#ff9b54", "border-width": 3, "underlay-color": "#ff8a36", "underlay-opacity": 0.22, "underlay-padding": 8, "font-weight": 700, color: "#fff4e9" } },
+        { selector: "node[flowRole ^= 'up']", style: { "border-color": "#577db8", color: "#dceaff" } },
+        { selector: "node[flowRole ^= 'down']", style: { "border-color": "#3f927a", color: "#d9f5eb" } },
+        { selector: "node[flowRole = 'callback']", style: { "border-color": "#956ac3", color: "#eadcff" } },
         { selector: "node[focusEndpoint = 'true']", style: { "border-color": "#ffcf70", "border-width": 2.5 } },
         { selector: "node[path = 'true']", style: { "border-color": "#161a25", "border-width": 4, label: "data(label)", "z-index": 12 } },
         { selector: "node:selected", style: { "border-color": "#161a25", "border-width": 4, label: "data(label)", "z-index": 15 } },
@@ -146,6 +156,9 @@ export default function GraphCanvas({
           "z-index": 11,
         } },
         { selector: "edge[status = 'candidate']", style: { "line-style": "dashed", opacity: 0.72 } },
+        { selector: "edge[kind = 'REGISTER_CALLBACK']", style: { "line-color": "#9d6ed0", "target-arrow-color": "#9d6ed0", "line-style": "dashed", width: 2.2, opacity: 0.9 } },
+        { selector: "edge[kind = 'INVOKES_CALLBACK']", style: { "line-color": "#b184dd", "target-arrow-color": "#b184dd", width: 2.4, opacity: 0.92 } },
+        { selector: "edge[kind = 'CALLS']", style: { "line-color": "#6387d8", "target-arrow-color": "#6387d8", width: 2.1, opacity: 0.86 } },
         { selector: "edge[origin = 'rule']", style: { "line-style": "dotted" } },
         { selector: "edge:selected", style: { width: 4, opacity: 1, "z-index": 10 } },
       ],
@@ -180,7 +193,7 @@ export default function GraphCanvas({
       if (instance.current === cy) instance.current = null;
       cy.destroy();
     };
-  }, [graph, level, view, showLabels, showEdgeLabels, pathNodeIds.join("|"), onSelect, onSelectEdge, onPathPick]);
+  }, [graph, level, view, callflowAnchorId, showLabels, showEdgeLabels, pathNodeIds.join("|"), onSelect, onSelectEdge, onPathPick]);
 
   useEffect(() => {
     const cy = instance.current;
@@ -204,7 +217,10 @@ export default function GraphCanvas({
     link.download = `clangwiki-graph.${kind}`; link.click(); URL.revokeObjectURL(link.href);
   };
 
-  return <div className={`graph-stage graph-stage-v2 ${view === "coremap" ? "graph-focus-stage graph-god-stage" : view === "surprises" ? "graph-focus-stage graph-surprise-stage" : ""}`}>
+  return <div className={`graph-stage graph-stage-v2 ${view === "callflow" ? "graph-callflow-stage" : view === "coremap" ? "graph-focus-stage graph-god-stage" : view === "surprises" ? "graph-focus-stage graph-surprise-stage" : ""}`}>
+    {view === "callflow" && callflowAnchorId && <div className="graph-callflow-lanes">
+      <span>二跳上游</span><span>一跳调用者</span><span className="active">当前函数</span><span>一跳被调用者</span><span>二跳下游</span>
+    </div>}
     <div className="graph-toolbar floating graph-camera-tools">
       <button className="icon-button" title="适应窗口" onClick={fitView}><Focus size={16} /></button>
       <button className="icon-button" title="放大" onClick={() => instance.current?.zoom({ level: (instance.current?.zoom() || 1) * 1.18, renderedPosition: { x: 420, y: 300 } })}><Plus size={15} /></button>
@@ -220,10 +236,10 @@ export default function GraphCanvas({
 }
 
 function layoutFor(view: GraphView, level: Level, nodeCount: number): cytoscape.LayoutOptions {
-  if (view === "coremap" || view === "surprises") {
+  if (view === "coremap" || view === "surprises" || view === "callflow") {
     return { name: "preset", fit: false, padding: 80 } as cytoscape.LayoutOptions;
   }
-  if (["hierarchy", "callflow", "dataflow", "interface"].includes(view)) {
+  if (["hierarchy", "dataflow", "interface"].includes(view)) {
     return {
       name: "dagre", rankDir: view === "hierarchy" ? "TB" : "LR",
       nodeSep: level === "symbol" ? 44 : level === "file" ? 84 : level === "module" ? 112 : 150,
@@ -236,6 +252,78 @@ function layoutFor(view: GraphView, level: Level, nodeCount: number): cytoscape.
     idealEdgeLength: view === "community" ? 170 : level === "symbol" ? 115 : 145,
     edgeElasticity: 0.42, nestingFactor: 0.8, gravity: 0.22, numIter: nodeCount > 450 ? 900 : 1800,
   } as cytoscape.LayoutOptions;
+}
+
+function callflowModel(nodes: any[], edges: any[], anchorId: string) {
+  const incoming = new Map<string, number>();
+  const outgoing = new Map<string, number>();
+  const walk = (reverse: boolean, distances: Map<string, number>) => {
+    let frontier = new Set([anchorId]);
+    for (let hop = 1; hop <= 2; hop += 1) {
+      const next = new Set<string>();
+      edges.forEach((edge: any) => {
+        const from = reverse ? edge.target : edge.source;
+        const to = reverse ? edge.source : edge.target;
+        if (frontier.has(from) && !distances.has(to) && to !== anchorId) {
+          distances.set(to, hop);
+          next.add(to);
+        }
+      });
+      frontier = next;
+    }
+  };
+  walk(true, incoming);
+  walk(false, outgoing);
+  const callbacks = new Set<string>();
+  edges.forEach((edge: any) => {
+    if (!["REGISTER_CALLBACK", "INVOKES_CALLBACK"].includes(edge.kind)) return;
+    if (edge.source !== anchorId) callbacks.add(edge.source);
+    if (edge.target !== anchorId) callbacks.add(edge.target);
+  });
+  const roles = new Map<string, string>();
+  nodes.forEach((node) => {
+    if (node.id === anchorId) { roles.set(node.id, "anchor"); return; }
+    if (callbacks.has(node.id)) { roles.set(node.id, "callback"); return; }
+    const up = incoming.get(node.id);
+    const down = outgoing.get(node.id);
+    if (up != null && (down == null || up <= down)) roles.set(node.id, `up${up}`);
+    else if (down != null) roles.set(node.id, `down${down}`);
+    else roles.set(node.id, "related");
+  });
+  const columns: Record<string, number> = { up2: 120, up1: 390, anchor: 660, down1: 930, down2: 1200, callback: 930, related: 660 };
+  const grouped = new Map<string, any[]>();
+  nodes.forEach((node) => grouped.set(roles.get(node.id) || "related", [...(grouped.get(roles.get(node.id) || "related") || []), node]));
+  const positions = new Map<string, { x: number; y: number }>();
+  ["up2", "up1", "anchor", "down1", "down2", "callback", "related"].forEach((role) => {
+    const items = grouped.get(role) || [];
+    const baseY = role === "callback" ? 650 : role === "related" ? 760 : 250;
+    const spacing = 68;
+    const offset = role === "callback" || role === "related" ? 0 : -((items.length - 1) * spacing) / 2;
+    items.forEach((node, index) => positions.set(node.id, { x: columns[role], y: baseY + offset + index * spacing }));
+  });
+  return { positions, roles };
+}
+
+function flowColor(role: string) {
+  if (role === "anchor") return "#4a2b1b";
+  if (role.startsWith("up")) return "#182a42";
+  if (role.startsWith("down")) return "#17342d";
+  if (role === "callback") return "#2d2140";
+  return "#202630";
+}
+
+function callflowLabel(node: any) {
+  const name = middleEllipsis(String(node.display_name || node.name || node.id), 30);
+  const path = String(node.path || node.module_id || node.subtype || "");
+  const pieces = path.split(/[\\/]/).filter(Boolean);
+  const subtitle = pieces.slice(-2).join("/") || String(node.subtype || "函数");
+  return `${name}\n${middleEllipsis(subtitle, 34)}`;
+}
+
+function middleEllipsis(value: string, limit: number) {
+  if (value.length <= limit) return value;
+  const left = Math.ceil((limit - 1) * 0.58);
+  return `${value.slice(0, left)}…${value.slice(-(limit - 1 - left))}`;
 }
 
 function focusPositions(nodes: any[], edges: any[], view: GraphView): Map<string, { x: number; y: number }> {
