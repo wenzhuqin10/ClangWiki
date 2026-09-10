@@ -1,6 +1,6 @@
 # ClangWiki
 
-ClangWiki 是一个面向通信基带等大型 C/C++ 代码仓的**本机单用户代码知识平台**。它以 Clang/`libclang` 提取的代码事实为基础，按“信道根目录的下一层子模块”为最小叶子文档单元，自底向上生成 Wiki；同时管理多个仓库、逻辑知识空间、代码关系图、人工知识和有引用的 RAG 问答。
+ClangWiki 是一套面向大型 C/C++ 代码仓的**本地代码知识工作流**。它以 Clang/`libclang` 提取的代码事实为基础，按“配置的模块根目录下一层子模块”为最小叶子文档单元，自底向上生成 Wiki；同时管理多个仓库、逻辑知识空间、代码关系图、人工知识和有引用的 RAG 问答，为 ChatGPT 或其他 Coding Agent 提供可检索、可理解、可验证的代码知识上下文。
 
 ```text
 本地 C/C++ 代码仓
@@ -18,7 +18,7 @@ ClangWiki 是一个面向通信基带等大型 C/C++ 代码仓的**本机单用�
 
 - 多本地代码仓独立注册、生成快照、索引与运行历史；删除注册记录不会删除源码。
 - 逻辑知识空间：跨仓检索、跨仓候选接口关系、集合 Wiki；不复制或合并任何代码仓。
-- 编译器证据代码图谱：构建目标、翻译单元、仓库、模块、文件、符号、基带领域概念和 Wiki 多层可视化；候选关系与确定关系严格分离。
+- 编译器证据代码图谱：构建目标、翻译单元、仓库、模块、文件、符号、领域概念和 Wiki 多层可视化；候选关系与确定关系严格分离。
 - 图分析工作台：社区耦合、核心节点、跨社区桥梁、循环依赖、孤点、定向路径、渐进邻居展开、证据检查和运行版本差异。
 - 生成快照不可直接修改；人工知识页、批注、标签和版本历史独立保存并统一检索。
 - 混合检索：精确符号、SQLite FTS5、默认 BGE-M3 ONNX + USearch 向量、图关系扩展和 RRF 融合。
@@ -112,10 +112,10 @@ repositories/<repo-id>/runs/<run-id>/output/Modules/
 
 ## 文档
 
-- [平台架构与数据边界](docs/PLATFORM_ARCHITECTURE.zh-CN.md)
+- [系统架构与数据边界](docs/PLATFORM_ARCHITECTURE.zh-CN.md)
 - [部署、离线交付与日常使用](docs/DEPLOYMENT_AND_USAGE.zh-CN.md)
 - [RAG、引用与检索规范](docs/RAG_AND_RETRIEVAL.zh-CN.md)
-- [无线基带代码知识图谱规范](docs/CODE_KNOWLEDGE_GRAPH.zh-CN.md)
+- [代码知识图谱规范](docs/CODE_KNOWLEDGE_GRAPH.zh-CN.md)
 - [文档输出章节规范](docs/DOCUMENT_OUTPUT_SPEC.zh-CN.md)
 - [原始数据格式与准确性边界](docs/DATA_CONTRACT.zh-CN.md)
 - [Build Agent 实现参考](ClangWiki_Build_Agent_Reference.md)
